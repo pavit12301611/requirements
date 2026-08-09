@@ -67,7 +67,7 @@ const isBlank = v => v === null || v === undefined || (typeof v === 'string' && 
 // ---------------------------------------------------------------- auth
 app.post('/api/login', (req, res) => {
   const username = String(req.body?.username || '').trim();
-  const password = req.body?.password;
+  const password = String(req.body?.password ?? '');
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
     const token = crypto.randomUUID();
     sessions.add(token);
@@ -173,6 +173,10 @@ app.get('/api/public/:slug', (req, res) => {
   const row = db.prepare('SELECT * FROM projects WHERE slug = ?').get(req.params.slug);
   if (!row) return sendError(res, 404, 'Questionnaire not found');
   const project = rowToProject(row);
+  if (project.status === 'draft') {
+    // Draft projects are hidden from customers (admin hasn't published yet)
+    return sendError(res, 404, 'Questionnaire not found');
+  }
   if (project.status === 'closed') {
     return res.status(410).json({ error: 'This questionnaire has been closed.', project: { name: project.name, closing: project.closing } });
   }
@@ -186,6 +190,7 @@ app.post('/api/public/:slug/submit', (req, res) => {
   const row = db.prepare('SELECT * FROM projects WHERE slug = ?').get(req.params.slug);
   if (!row) return sendError(res, 404, 'Questionnaire not found');
   const project = rowToProject(row);
+  if (project.status === 'draft') return sendError(res, 404, 'Questionnaire not found');
   if (project.status === 'closed') return sendError(res, 410, 'This questionnaire has been closed.');
 
   const body = req.body || {};
