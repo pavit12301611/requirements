@@ -414,10 +414,12 @@ document.addEventListener('click', async e => {
   }
 });
 
-document.addEventListener('input', e => {
+function updateMeta(e) {
   const el = e.target.closest('[data-meta]');
   if (el && state.editing) state.editing.meta[el.dataset.meta] = el.value;
-});
+}
+document.addEventListener('input', updateMeta);
+document.addEventListener('change', updateMeta);
 
 // ---- save ----
 document.addEventListener('click', async e => {
