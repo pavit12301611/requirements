@@ -203,8 +203,12 @@ app.get('/c/:slug', (_req, res) => res.sendFile(path.join(__dirname, 'public', '
 
 app.use((_req, res) => sendError(res, 404, 'Not found'));
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`ReqForge running on http://0.0.0.0:${PORT}`);
-  console.log(`  Admin app:     /          (password: ${ADMIN_PASSWORD === 'admin123' ? 'admin123 (default — set ADMIN_PASSWORD env to change)' : 'set via ADMIN_PASSWORD'})`);
-  console.log(`  Customer page: /c/<slug>`);
-});
+if (!process.env.VERCEL && !process.env.VERCEL_ENV && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`ReqForge running on http://0.0.0.0:${PORT}`);
+    console.log(`  Admin app:     /          (password: ${ADMIN_PASSWORD === 'admin123' ? 'admin123 (default — set ADMIN_PASSWORD env to change)' : 'set via ADMIN_PASSWORD'})`);
+    console.log(`  Customer page: /c/<slug>`);
+  });
+}
+
+export default app;
