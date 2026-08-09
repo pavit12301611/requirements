@@ -30,6 +30,7 @@ Copy `.env.example` to `.env` to customize. Anything you set in the real environ
 |------------------|--------------|----------------------------------------------|
 | `ADMIN_USERNAME` | `pavit`      | Admin login username                         |
 | `ADMIN_PASSWORD` | `5161211`    | Admin login password                         |
+| `SESSION_SECRET` | derived from credentials | Key for signing admin session cookies (set explicitly to keep sessions valid across credential rotations) |
 | `PORT`           | `3000`       | Port the server listens on                   |
 | `DATA_DIR`       | `./data`     | Where `requirements.db` is stored             |
 
@@ -56,7 +57,7 @@ Copy `.env.example` to `.env` to customize. Anything you set in the real environ
 |----------|----------------------------------------------------|
 | Backend  | Node.js + Express, SQLite via built-in `node:sqlite` |
 | Frontend | Vanilla JS SPAs (admin) + auto-generated questionnaire (customer), no build step |
-| Auth     | Username + password login (env `ADMIN_USERNAME` default `pavit`, `ADMIN_PASSWORD` default `5161211`) with in-memory sessions |
+| Auth     | Username + password login (env `ADMIN_USERNAME` default `pavit`, `ADMIN_PASSWORD` default `5161211`) with signed, stateless session cookies — sessions survive restarts and work across serverless instances (optional `SESSION_SECRET` env) |
 
 ## API (summary)
 
