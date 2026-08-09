@@ -33,8 +33,43 @@ const ADMIN_USERNAME = (process.env.ADMIN_USERNAME || 'pavit').trim();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '5161211';
 const DEFAULT_CREDENTIALS = ADMIN_USERNAME === 'pavit' && ADMIN_PASSWORD === '5161211';
 const SESSION_COOKIE = 'rf_session';
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days — matches the cookie Max-Age
 
-const sessions = new Set(); // in-memory admin sessions (restart = re-login, fine for a demo)
+// Stateless, HMAC-signed session tokens. Nothing is stored server-side, so any
+// instance can verify a token it didn't issue: sessions survive restarts,
+// `node --watch` reloads and serverless deployments (e.g. Vercel), where each
+// request may run in a completely fresh process. (The old in-memory session
+// table lost every session in exactly those cases, which bounced admins back
+// to the sign-in screen on the next click.)
+const SESSION_SECRET = crypto.createHash('sha256')
+  .update(process.env.SESSION_SECRET || `reqforge-session|${ADMIN_USERNAME}|${ADMIN_PASSWORD}`)
+  .digest();
+// Deriving the default secret from the credentials means rotating them
+// automatically invalidates every outstanding session.
+
+function signPayload(payload) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+}
+
+function makeSessionToken() {
+  const payload = `admin.${Date.now()}.${crypto.randomBytes(16).toString('base64url')}`;
+  return `${payload}.${signPayload(payload)}`;
+}
+
+function isValidSessionToken(token) {
+  if (typeof token !== 'string' || !token || token.length > 512) return false;
+  const dot = token.lastIndexOf('.');
+  if (dot <= 0) return false;
+  const payload = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const [kind, issuedRaw] = payload.split('.');
+  const issued = Number(issuedRaw);
+  if (kind !== 'admin' || !Number.isFinite(issued)) return false;
+  if (issued > Date.now() + 60_000 || Date.now() - issued > SESSION_TTL_MS) return false;
+  const expected = signPayload(payload);
+  const a = Buffer.from(sig), b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -54,7 +89,7 @@ function parseCookies(req) {
 app.use((req, _res, next) => { req.cookies = parseCookies(req); next(); });
 
 function requireAuth(req, res, next) {
-  if (sessions.has(req.cookies[SESSION_COOKIE])) return next();
+  if (isValidSessionToken(req.cookies[SESSION_COOKIE])) return next();
   res.status(401).json({ error: 'Not signed in' });
 }
 
@@ -110,23 +145,22 @@ app.post('/api/login', (req, res) => {
   const username = String(req.body?.username || '').trim();
   const password = String(req.body?.password ?? '');
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-    const token = crypto.randomUUID();
-    sessions.add(token);
     res.setHeader('Set-Cookie',
-      `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`);
+      `${SESSION_COOKIE}=${makeSessionToken()}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`);
     return res.json({ ok: true });
   }
   sendError(res, 401, 'Wrong username or password');
 });
 
-app.post('/api/logout', (req, res) => {
-  sessions.delete(req.cookies[SESSION_COOKIE]);
+app.post('/api/logout', (_req, res) => {
+  // Stateless tokens: dropping the cookie is the logout. (To revoke tokens for
+  // every device at once, change ADMIN_PASSWORD or SESSION_SECRET.)
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
   res.json({ ok: true });
 });
 
 app.get('/api/me', (req, res) => {
-  if (sessions.has(req.cookies[SESSION_COOKIE])) {
+  if (isValidSessionToken(req.cookies[SESSION_COOKIE])) {
     return res.json({ ok: true, admin: ADMIN_USERNAME, defaultCredentials: DEFAULT_CREDENTIALS });
   }
   sendError(res, 401, 'Not signed in');

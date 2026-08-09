@@ -9,6 +9,7 @@ const state = {
   editing: null,        // editor state
   editingId: null,
   savedHash: null,
+  signedIn: false,      // true once the session has been confirmed
   adminName: 'Admin'    // admin username (shown in the topbar)
 };
 window.__state = state; // debug handle
@@ -29,8 +30,15 @@ async function api(path, opts = {}) {
   let data = {};
   try { data = await res.json(); } catch { /* no body */ }
   if (!res.ok) {
-    if (res.status === 401 && !path.startsWith('/api/login')) { renderLogin(); }
-    throw new Error(data.error || `Request failed (${res.status})`);
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    if (res.status === 401 && !path.startsWith('/api/login')) {
+      // Session rejected while navigating: show the sign-in screen, and say why
+      // if the session was previously known-good (expired / server restarted).
+      renderLogin(state.signedIn ? 'Your session expired — please sign in again to continue.' : null);
+      state.signedIn = false;
+    }
+    throw err;
   }
   return data;
 }
@@ -75,19 +83,21 @@ function topbar() {
 }
 
 async function doLogout() {
-  await api('/api/logout', { method: 'POST' });
+  try { await api('/api/logout', { method: 'POST' }); } catch { /* clear locally anyway */ }
+  state.signedIn = false;
   renderLogin();
 }
 window.doLogout = doLogout;
 
 /* ---------------- login ---------------- */
-function renderLogin() {
+function renderLogin(notice) {
   $('#app').innerHTML = `
   <div class="login-wrap fade-in">
     <form class="card login-card" onsubmit="doLogin(event)">
       <div class="logo-big">✓</div>
       <h1>Welcome to ReqForge</h1>
       <p class="sub">Sign in to build custom requirement questionnaires for your clients — tick or type.</p>
+      ${notice ? `<div class="login-notice">⚠️ ${esc(notice)}</div>` : ''}
       <div class="field">
         <input class="input" type="text" name="username" placeholder="Admin username" value="pavit" autocomplete="username" autofocus required>
       </div>
@@ -121,7 +131,11 @@ async function boot() {
   try {
     const me = await api('/api/me');
     if (me.admin) state.adminName = me.admin;
-  } catch { renderLogin(); return; }
+    state.signedIn = true;
+  } catch (err) {
+    if (err.status !== 401) renderLogin(); // 401 already rendered by api() (keeps its notice)
+    return;
+  }
   if (!state.library) {
     const lib = await api('/api/library');
     state.library = lib.modules;
@@ -218,7 +232,19 @@ function renderEditor(id) {
 }
 
 async function renderEditorShell(id) {
-  const project = id ? (await api(`/api/projects/${id}`)).project : null;
+  let project = null;
+  if (id) {
+    try {
+      project = (await api(`/api/projects/${id}`)).project;
+    } catch (err) {
+      // 401 → api() already rendered the login screen; otherwise go back to the list.
+      if (err.status !== 401) {
+        toast(err.message || 'Could not load project', 'err');
+        if (location.hash !== '#/') location.hash = '#/';
+      }
+      return;
+    }
+  }
   if (id && !state.editing) state.editing = buildEditing(project);
   else if (!id && !state.editing) state.editing = buildEditing(null);
 
@@ -470,8 +496,13 @@ async function renderDetail(id) {
       api(`/api/projects/${id}/submissions`).then(r => r.submissions)
     ]);
   } catch (err) {
-    // api() already handles 401 by calling renderLogin(); don't overwrite with dashboard
-    if (!err.message || !err.message.includes('401')) renderDashboard();
+    // 401 → api() already rendered the login screen; don't clobber it.
+    // Other failures (e.g. 404 after the project was deleted) → back to the list.
+    if (err.status !== 401) {
+      toast(err.message || 'Could not load project', 'err');
+      if (location.hash !== '#/') location.hash = '#/';
+      else renderDashboard();
+    }
     return;
   }
   const link = `/c/${project.slug}`;
