@@ -8,7 +8,8 @@ const state = {
   library: null,        // modules from /api/library
   editing: null,        // editor state
   editingId: null,
-  savedHash: null
+  savedHash: null,
+  adminName: 'Admin'    // admin username (shown in the topbar)
 };
 window.__state = state; // debug handle
 
@@ -62,12 +63,12 @@ function badge(status) {
 function dateStr(iso) { return new Date(iso + 'Z').toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); }
 
 /* ---------------- app shell ---------------- */
-function topbar(activeName = '') {
+function topbar() {
   return `
   <div class="topbar"><div class="wrap topbar-inner">
     <a class="brand" href="#/"><span class="logo">✓</span> ReqForge</a>
     <span class="spacer"></span>
-    ${activeName ? `<span class="user-chip">${esc(activeName)}</span>` : ''}
+    <span class="user-chip"><span class="avatar">${esc((state.adminName || 'A').slice(0, 1).toUpperCase())}</span>${esc(state.adminName)}</span>
     <button class="btn btn-ghost btn-sm" onclick="doLogout()">Log out</button>
   </div></div>`;
 }
@@ -85,30 +86,40 @@ function renderLogin() {
     <form class="card login-card" onsubmit="doLogin(event)">
       <div class="logo-big">✓</div>
       <h1>Welcome to ReqForge</h1>
-      <p class="sub">Build custom requirement questionnaires for your clients — tick or type.</p>
+      <p class="sub">Sign in to build custom requirement questionnaires for your clients — tick or type.</p>
       <div class="field">
-        <input class="input" type="password" name="password" placeholder="Admin password" autofocus required>
+        <input class="input" type="text" name="username" placeholder="Admin username" value="pavit" autocomplete="username" autofocus required>
+      </div>
+      <div class="field">
+        <input class="input" type="password" name="password" placeholder="Password" autocomplete="current-password" required>
       </div>
       <button class="btn btn-primary btn-block" type="submit">Sign in</button>
-      <div class="hint">Demo password: <b>admin123</b> · change it with the <span class="mono">ADMIN_PASSWORD</span> env var</div>
+      <div class="hint">Default admin: <b>pavit</b> · change it with the <span class="mono">ADMIN_USERNAME</span> / <span class="mono">ADMIN_PASSWORD</span> env vars</div>
     </form>
   </div>`;
-  setTimeout(() => $('input', $('#app'))?.focus(), 50);
+  setTimeout(() => $('input[name="username"]', $('#app'))?.focus(), 50);
 }
 
 window.doLogin = async function (e) {
   e.preventDefault();
+  const btn = e.target.querySelector('button[type="submit"]');
+  btn.disabled = true;
   try {
-    await api('/api/login', { method: 'POST', body: { password: e.target.password.value } });
+    await api('/api/login', {
+      method: 'POST',
+      body: { username: e.target.username.value, password: e.target.password.value }
+    });
     location.hash = '#/';
     await boot();
   } catch (err) { toast(err.message, 'err'); }
+  finally { btn.disabled = false; }
 };
 
 /* ---------------- boot & router ---------------- */
 async function boot() {
   try {
-    await api('/api/me');
+    const me = await api('/api/me');
+    if (me.admin) state.adminName = me.admin;
   } catch { renderLogin(); return; }
   if (!state.library) {
     const lib = await api('/api/library');
@@ -215,7 +226,7 @@ async function renderEditorShell(id) {
   const link = isNew ? null : `/c/${project.slug}`;
 
   $('#app').innerHTML = `
-  ${topbar(project?.name || 'New project')}
+  ${topbar()}
   <div class="wrap fade-in">
     <div class="page-head">
       <div>
@@ -453,7 +464,7 @@ async function renderDetail(id) {
   const totalQ = (project.config.modules || []).reduce((n, m) => n + m.questions.length, 0);
 
   $('#app').innerHTML = `
-  ${topbar(project.name || 'Project')}
+  ${topbar()}
   <div class="wrap fade-in">
     <div class="detail-head">
       <div class="d-top">
