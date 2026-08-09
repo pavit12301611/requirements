@@ -305,7 +305,7 @@ function moduleCard(m) {
         <h3>${esc(m.title)}</h3>
         <p>${esc(m.blurb)}</p>
       </div>
-      <label class="switch" onclick="event.stopPropagation()">
+      <label class="switch">
         <input type="checkbox" data-module-on ${on ? 'checked' : ''}>
         <span class="track"></span>
       </label>
@@ -316,7 +316,7 @@ function moduleCard(m) {
         <div class="q-row" data-q="${q.id}">
           <span class="q-type">${q.type}</span>
           <span class="q-label">${esc(q.label)}${q.required ? ' <span style="color:var(--red)">*</span>' : ''}</span>
-          <label class="switch small" onclick="event.stopPropagation()">
+          <label class="switch small">
             <input type="checkbox" data-q-on ${m.selected.has(q.id) ? 'checked' : ''}>
             <span class="track"></span>
           </label>
@@ -361,9 +361,17 @@ document.addEventListener('click', async e => {
   const mod = editing.modules.find(m => m.id === modId);
   if (!mod) return;
 
-  // module head click → toggle
-  if (e.target.closest('[data-toggle-module]')) {
+  // module head click → toggle (ignore clicks that land on the switch itself;
+  // those are handled by the [data-module-on] branch below to avoid double-toggling)
+  if (e.target.closest('[data-toggle-module]') && !e.target.closest('.switch')) {
     mod.on = !mod.on;
+    renderEditorShell(state.editingId);
+    return;
+  }
+  // toggle switch inside the module head → mirror the native checkbox state
+  const modSwitch = e.target.closest('[data-module-on]');
+  if (modSwitch) {
+    mod.on = modSwitch.checked;
     renderEditorShell(state.editingId);
     return;
   }

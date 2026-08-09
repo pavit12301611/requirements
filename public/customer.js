@@ -94,6 +94,13 @@ function render() {
   </form>`;
 
   bindQuestionListeners();
+  // Don't let Enter in a single-line text field submit the whole questionnaire;
+  // textareas keep their normal newline behaviour.
+  $('.form-shell').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'submit') {
+      e.preventDefault();
+    }
+  });
   $('.form-shell').addEventListener('submit', submitForm);
   updateProgress();
 }
