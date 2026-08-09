@@ -2,6 +2,7 @@
 // Admin API (password-protected) + public customer questionnaire API.
 import express from 'express';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -9,8 +10,28 @@ import {
 } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Minimal .env loader (zero dependencies). Values in the real environment win.
+function loadEnv() {
+  let src;
+  try { src = fs.readFileSync(path.join(__dirname, '.env'), 'utf8'); }
+  catch { return; }
+  for (const line of src.split('\n')) {
+    const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
+    if (!m || m[1] in process.env) continue;
+    let val = m[2];
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    process.env[m[1]] = val;
+  }
+}
+loadEnv();
+
 const PORT = process.env.PORT || 3000;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const ADMIN_USERNAME = (process.env.ADMIN_USERNAME || 'pavit').trim();
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '5161211';
+const DEFAULT_CREDENTIALS = ADMIN_USERNAME === 'pavit' && ADMIN_PASSWORD === '5161211';
 const SESSION_COOKIE = 'rf_session';
 
 const sessions = new Set(); // in-memory admin sessions (restart = re-login, fine for a demo)
@@ -45,14 +66,16 @@ const isBlank = v => v === null || v === undefined || (typeof v === 'string' && 
 
 // ---------------------------------------------------------------- auth
 app.post('/api/login', (req, res) => {
-  if (req.body && req.body.password === ADMIN_PASSWORD) {
+  const username = String(req.body?.username || '').trim();
+  const password = req.body?.password;
+  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
     const token = crypto.randomUUID();
     sessions.add(token);
     res.setHeader('Set-Cookie',
       `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`);
     return res.json({ ok: true });
   }
-  sendError(res, 401, 'Wrong password');
+  sendError(res, 401, 'Wrong username or password');
 });
 
 app.post('/api/logout', (req, res) => {
@@ -62,7 +85,9 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.get('/api/me', (req, res) => {
-  if (sessions.has(req.cookies[SESSION_COOKIE])) return res.json({ ok: true, defaultPassword: ADMIN_PASSWORD === 'admin123' });
+  if (sessions.has(req.cookies[SESSION_COOKIE])) {
+    return res.json({ ok: true, admin: ADMIN_USERNAME, defaultCredentials: DEFAULT_CREDENTIALS });
+  }
   sendError(res, 401, 'Not signed in');
 });
 
@@ -206,7 +231,7 @@ app.use((_req, res) => sendError(res, 404, 'Not found'));
 if (!process.env.VERCEL && !process.env.VERCEL_ENV && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ReqForge running on http://0.0.0.0:${PORT}`);
-    console.log(`  Admin app:     /          (password: ${ADMIN_PASSWORD === 'admin123' ? 'admin123 (default — set ADMIN_PASSWORD env to change)' : 'set via ADMIN_PASSWORD'})`);
+    console.log(`  Admin app:     /   (username: ${ADMIN_USERNAME}, password: ${DEFAULT_CREDENTIALS ? '5161211 (default — set ADMIN_USERNAME/ADMIN_PASSWORD env to change)' : 'set via env vars'})`);
     console.log(`  Customer page: /c/<slug>`);
   });
 }

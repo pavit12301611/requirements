@@ -16,11 +16,22 @@ npm install
 npm start          # → http://localhost:3000
 ```
 
-- **Admin app:** http://localhost:3000 — sign in with `admin123` (change via the `ADMIN_PASSWORD` env var)
+- **Admin app:** http://localhost:3000 — sign in with username `pavit` / password `5161211` (change via the `ADMIN_USERNAME` and `ADMIN_PASSWORD` env vars)
 - **Demo customer page:** http://localhost:3000/c/daily-bloom
 - **Tests:** `npm test`
 
 Requires Node 22+ (uses the built-in `node:sqlite` — no native compile step). Data is stored in `data/requirements.db` locally (gitignored; delete it to reset to demo data), or automatically in `/tmp/reqforge-data/requirements.db` when deployed to Vercel or other serverless environments.
+
+### Configuration
+
+Copy `.env.example` to `.env` to customize. Anything you set in the real environment overrides the file.
+
+| Variable         | Default      | Purpose                                      |
+|------------------|--------------|----------------------------------------------|
+| `ADMIN_USERNAME` | `pavit`      | Admin login username                         |
+| `ADMIN_PASSWORD` | `5161211`    | Admin login password                         |
+| `PORT`           | `3000`       | Port the server listens on                   |
+| `DATA_DIR`       | `./data`     | Where `requirements.db` is stored             |
 
 ## How it works
 
@@ -45,13 +56,13 @@ Requires Node 22+ (uses the built-in `node:sqlite` — no native compile step). 
 |----------|----------------------------------------------------|
 | Backend  | Node.js + Express, SQLite via built-in `node:sqlite` |
 | Frontend | Vanilla JS SPAs (admin) + auto-generated questionnaire (customer), no build step |
-| Auth     | Password login (env `ADMIN_PASSWORD`, default `admin123`) with in-memory sessions |
+| Auth     | Username + password login (env `ADMIN_USERNAME` default `pavit`, `ADMIN_PASSWORD` default `5161211`) with in-memory sessions |
 
 ## API (summary)
 
 | Method | Route                        | Purpose                                  |
 |--------|------------------------------|------------------------------------------|
-| POST   | `/api/login`                 | Sign in (body: `{password}`)             |
+| POST   | `/api/login`                 | Sign in (body: `{username, password}`)   |
 | GET    | `/api/projects`              | List projects w/ submission counts       |
 | POST   | `/api/projects`              | Create project (name → unique slug)      |
 | GET    | `/api/projects/:id`          | Project detail incl. enabled config      |
