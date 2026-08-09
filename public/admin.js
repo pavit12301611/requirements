@@ -22,6 +22,7 @@ function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').re
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined
   });
@@ -468,7 +469,11 @@ async function renderDetail(id) {
       api(`/api/projects/${id}`).then(r => r.project),
       api(`/api/projects/${id}/submissions`).then(r => r.submissions)
     ]);
-  } catch { renderDashboard(); return; }
+  } catch (err) {
+    // api() already handles 401 by calling renderLogin(); don't overwrite with dashboard
+    if (!err.message || !err.message.includes('401')) renderDashboard();
+    return;
+  }
   const link = `/c/${project.slug}`;
   const enabled = (project.config.modules || []).length;
   const totalQ = (project.config.modules || []).reduce((n, m) => n + m.questions.length, 0);
