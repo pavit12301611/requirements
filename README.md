@@ -20,7 +20,7 @@ npm start          # → http://localhost:3000
 - **Demo customer page:** http://localhost:3000/c/daily-bloom
 - **Tests:** `npm test`
 
-Requires Node 22.5+ (uses the built-in `node:sqlite` — no native compile step). Data is stored in `data/requirements.db` (gitignored); delete it to reset to demo data.
+Requires Node 22+ (uses the built-in `node:sqlite` — no native compile step). Data is stored in `data/requirements.db` locally (gitignored; delete it to reset to demo data), or automatically in `/tmp/reqforge-data/requirements.db` when deployed to Vercel or other serverless environments.
 
 ## How it works
 
