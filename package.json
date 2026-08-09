@@ -1,0 +1,21 @@
+{
+  "name": "reqforge-requirements-builder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ReqForge — build custom requirement-gathering questionnaires for your clients, share a link, and collect their answers.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node tests/admin.smoke.mjs && node tests/customer.smoke.mjs"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1"
+  }
+}
