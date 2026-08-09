@@ -63,6 +63,47 @@ function sendError(res, status, message) {
 }
 
 const isBlank = v => v === null || v === undefined || (typeof v === 'string' && v.trim() === '') || (Array.isArray(v) && v.length === 0);
+const QUESTION_TYPES = new Set(['text', 'textarea', 'checkbox', 'radio', 'rating']);
+
+// Keep project configurations well-formed even when the API is called directly.
+// Built-in questions are stored as IDs; custom questions are stored as a small,
+// validated object alongside the selected module.
+function normalizeConfig(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config) || !Array.isArray(config.modules)) {
+    throw new Error('Config must include a modules array.');
+  }
+  const modules = [];
+  const seenModules = new Set();
+  for (const moduleConfig of config.modules) {
+    const module = LIBRARY.find(m => m.id === moduleConfig?.id);
+    if (!module || seenModules.has(module.id)) continue;
+    seenModules.add(module.id);
+    const questions = [];
+    const seenQuestions = new Set();
+    for (const question of Array.isArray(moduleConfig.questions) ? moduleConfig.questions : []) {
+      if (typeof question === 'string') {
+        if (module.questions.some(q => q.id === question) && !seenQuestions.has(question)) {
+          questions.push(question);
+          seenQuestions.add(question);
+        }
+        continue;
+      }
+      if (!question || typeof question !== 'object') continue;
+      const id = String(question.id || '').trim();
+      const label = String(question.label || '').trim();
+      const type = String(question.type || 'text');
+      const options = Array.isArray(question.options)
+        ? question.options.map(option => String(option).trim()).filter(Boolean).slice(0, 50)
+        : [];
+      if (!id || !label || id.length > 100 || label.length > 500 || !QUESTION_TYPES.has(type) || seenQuestions.has(id)) continue;
+      if ((type === 'checkbox' || type === 'radio') && !options.length) continue;
+      questions.push({ id, type, label, help: String(question.help || '').slice(0, 1000), options, required: Boolean(question.required), placeholder: String(question.placeholder || '').slice(0, 500) });
+      seenQuestions.add(id);
+    }
+    if (questions.length) modules.push({ id: module.id, questions });
+  }
+  return { modules };
+}
 
 // ---------------------------------------------------------------- auth
 app.post('/api/login', (req, res) => {
@@ -108,7 +149,9 @@ app.get('/api/projects', requireAuth, (_req, res) => {
 
 app.post('/api/projects', requireAuth, (req, res) => {
   const name = String(req.body?.name || '').trim();
-  const slug = makeSlug(name || 'project');
+  if (!name) return sendError(res, 400, 'Project name is required');
+  if (name.length > 200) return sendError(res, 400, 'Project name must be 200 characters or fewer');
+  const slug = makeSlug(name);
   const config = defaultConfig();
   const r = db.prepare(
     'INSERT INTO projects (slug, name, config) VALUES (?, ?, ?)'
@@ -133,8 +176,11 @@ app.patch('/api/projects/:id', requireAuth, (req, res) => {
   for (const key of allowed) {
     if (req.body && req.body[key] !== undefined) {
       if (key === 'config') {
+        let config;
+        try { config = normalizeConfig(req.body[key]); }
+        catch (error) { return sendError(res, 400, error.message); }
         sets.push('config = ?');
-        params.push(JSON.stringify(req.body[key]));
+        params.push(JSON.stringify(config));
       } else if (key === 'status') {
         if (!['draft', 'live', 'closed'].includes(req.body[key])) return sendError(res, 400, 'Invalid status');
         sets.push('status = ?');
@@ -201,24 +247,47 @@ app.post('/api/public/:slug/submit', (req, res) => {
   if (!name) return sendError(res, 400, 'Please tell us your name.');
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) return sendError(res, 400, 'Please provide a valid email address.');
 
-  // Validate required questions against the enabled modules
+  // Only accept answers to questions currently enabled by the project. Labels,
+  // types and options come from the project configuration, never from the client.
   const modules = resolveModules(project);
-  const required = [];
-  for (const m of modules) for (const q of m.questions) if (q.required) required.push(q);
-  const provided = new Set(
-    answers.filter(a => !isBlank(a.value)).map(a => String(a.id))
-  );
-  const errors = required.filter(q => !provided.has(q.id))
-    .map(q => ({ id: q.id, label: q.label }));
-  if (errors.length) {
-    return res.status(400).json({ error: 'Some required questions are missing.', errors });
+  const questions = new Map();
+  for (const module of modules) for (const question of module.questions) questions.set(question.id, question);
+  const supplied = new Map();
+  for (const answer of answers) {
+    if (!answer || typeof answer !== 'object') continue;
+    const id = String(answer.id || '');
+    if (questions.has(id) && !supplied.has(id) && !isBlank(answer.value)) supplied.set(id, answer.value);
+  }
+  const errors = [...questions.values()]
+    .filter(question => question.required && !supplied.has(question.id))
+    .map(question => ({ id: question.id, label: question.label }));
+  if (errors.length) return res.status(400).json({ error: 'Some required questions are missing.', errors });
+
+  const cleanAnswers = [];
+  for (const [id, value] of supplied) {
+    const question = questions.get(id);
+    let cleanValue;
+    if (question.type === 'checkbox') {
+      if (!Array.isArray(value)) continue;
+      cleanValue = [...new Set(value.map(v => String(v)).filter(v => question.options.includes(v)))];
+      if (!cleanValue.length) continue;
+    } else if (question.type === 'radio') {
+      cleanValue = String(value);
+      if (!question.options.includes(cleanValue)) continue;
+    } else if (question.type === 'rating') {
+      cleanValue = Number(value);
+      if (!Number.isInteger(cleanValue) || cleanValue < 1 || cleanValue > 5) continue;
+    } else {
+      cleanValue = String(value).trim().slice(0, 10000);
+      if (!cleanValue) continue;
+    }
+    cleanAnswers.push({ id, label: question.label, type: question.type, value: cleanValue });
   }
 
-  const cleanAnswers = answers
-    .filter(a => !isBlank(a.value) && a.label)
-    .map(a => ({
-      id: String(a.id), label: String(a.label), type: String(a.type || 'text'), value: a.value
-    }));
+  // A malformed required answer (such as a non-existent radio option) must not
+  // pass validation merely because it contained a value.
+  const invalidRequired = [...questions.values()].filter(question => question.required && !cleanAnswers.some(answer => answer.id === question.id));
+  if (invalidRequired.length) return res.status(400).json({ error: 'Some required answers are invalid.', errors: invalidRequired.map(q => ({ id: q.id, label: q.label })) });
 
   const r = db.prepare(
     'INSERT INTO submissions (project_id, customer_name, customer_email, answers) VALUES (?, ?, ?, ?)'
