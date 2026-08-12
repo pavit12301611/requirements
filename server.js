@@ -82,7 +82,15 @@ function parseCookies(req) {
   if (!header) return out;
   for (const part of header.split(';')) {
     const i = part.indexOf('=');
-    if (i > -1) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i > -1) {
+      const key = part.slice(0, i).trim();
+      const rawVal = part.slice(i + 1).trim();
+      try {
+        out[key] = decodeURIComponent(rawVal);
+      } catch {
+        out[key] = rawVal;
+      }
+    }
   }
   return out;
 }
@@ -166,6 +174,16 @@ app.get('/api/me', (req, res) => {
   sendError(res, 401, 'Not signed in');
 });
 
+function findProjectRow(idOrSlug) {
+  if (idOrSlug === null || idOrSlug === undefined || idOrSlug === '') return null;
+  const idNum = Number(idOrSlug);
+  if (Number.isInteger(idNum) && idNum > 0) {
+    const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(idNum);
+    if (row) return row;
+  }
+  return db.prepare('SELECT * FROM projects WHERE slug = ?').get(String(idOrSlug));
+}
+
 // ---------------------------------------------------------------- library
 import { LIBRARY } from './lib/library.js';
 app.get('/api/library', requireAuth, (_req, res) => {
@@ -186,22 +204,29 @@ app.post('/api/projects', requireAuth, (req, res) => {
   if (!name) return sendError(res, 400, 'Project name is required');
   if (name.length > 200) return sendError(res, 400, 'Project name must be 200 characters or fewer');
   const slug = makeSlug(name);
-  const config = defaultConfig();
+  let config = defaultConfig();
+  if (req.body?.config) {
+    try { config = normalizeConfig(req.body.config); } catch (e) { return sendError(res, 400, e.message); }
+  }
+  const status = ['draft', 'live', 'closed'].includes(req.body?.status) ? req.body.status : 'draft';
+  const tagline = String(req.body?.tagline || '').trim();
+  const welcome = String(req.body?.welcome || '').trim();
+  const closing = String(req.body?.closing || '').trim();
   const r = db.prepare(
-    'INSERT INTO projects (slug, name, config) VALUES (?, ?, ?)'
-  ).run(slug, name, JSON.stringify(config));
+    'INSERT INTO projects (slug, name, tagline, welcome, closing, status, config) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(slug, name, tagline, welcome, closing, status, JSON.stringify(config));
   const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(r.lastInsertRowid));
   res.status(201).json({ project: rowToProject(row) });
 });
 
 app.get('/api/projects/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(req.params.id));
+  const row = findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
   res.json({ project: rowToProject(row) });
 });
 
 app.patch('/api/projects/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(req.params.id));
+  const row = findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
 
   const allowed = ['name', 'tagline', 'welcome', 'closing', 'status', 'config'];
@@ -226,22 +251,23 @@ app.patch('/api/projects/:id', requireAuth, (req, res) => {
     }
   }
   if (!sets.length) return sendError(res, 400, 'Nothing to update');
-  params.push(Number(req.params.id));
+  params.push(row.id);
   db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...params);
-  const updated = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(req.params.id));
+  const updated = db.prepare('SELECT * FROM projects WHERE id = ?').get(row.id);
   res.json({ project: rowToProject(updated) });
 });
 
 app.delete('/api/projects/:id', requireAuth, (req, res) => {
-  const r = db.prepare('DELETE FROM projects WHERE id = ?').run(Number(req.params.id));
+  const row = findProjectRow(req.params.id);
+  if (!row) return sendError(res, 404, 'Project not found');
+  db.prepare('DELETE FROM submissions WHERE project_id = ?').run(row.id);
+  const r = db.prepare('DELETE FROM projects WHERE id = ?').run(row.id);
   if (!r.changes) return sendError(res, 404, 'Project not found');
   res.json({ ok: true });
 });
 
 app.post('/api/projects/:id/duplicate', requireAuth, (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id)) return sendError(res, 400, 'Invalid project ID');
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+  const row = findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
 
   const source = rowToProject(row);
@@ -259,21 +285,22 @@ app.post('/api/projects/:id/duplicate', requireAuth, (req, res) => {
 
 // ---------------------------------------------------------------- submissions (admin)
 app.get('/api/projects/:id/submissions', requireAuth, (req, res) => {
-  const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(Number(req.params.id));
-  if (!project) return sendError(res, 404, 'Project not found');
+  const row = findProjectRow(req.params.id);
+  if (!row) return sendError(res, 404, 'Project not found');
   const rows = db.prepare(
     'SELECT * FROM submissions WHERE project_id = ? ORDER BY id DESC'
-  ).all(Number(req.params.id));
+  ).all(row.id);
   res.json({ submissions: rows.map(rowToSubmission) });
 });
 
 app.delete('/api/projects/:id/submissions/:subId', requireAuth, (req, res) => {
-  const projectId = Number(req.params.id);
+  const row = findProjectRow(req.params.id);
+  if (!row) return sendError(res, 404, 'Project not found');
   const subId = Number(req.params.subId);
-  if (!Number.isInteger(projectId) || !Number.isInteger(subId)) {
+  if (!Number.isInteger(subId)) {
     return sendError(res, 400, 'Invalid ID');
   }
-  const r = db.prepare('DELETE FROM submissions WHERE id = ? AND project_id = ?').run(subId, projectId);
+  const r = db.prepare('DELETE FROM submissions WHERE id = ? AND project_id = ?').run(subId, row.id);
   if (!r.changes) return sendError(res, 404, 'Submission not found');
   res.json({ ok: true });
 });
@@ -283,16 +310,18 @@ app.get('/api/public/:slug', (req, res) => {
   const row = db.prepare('SELECT * FROM projects WHERE slug = ?').get(req.params.slug);
   if (!row) return sendError(res, 404, 'Questionnaire not found');
   const project = rowToProject(row);
-  if (project.status === 'draft') {
+  const isAdmin = isValidSessionToken(req.cookies[SESSION_COOKIE]);
+  if (project.status === 'draft' && !isAdmin) {
     // Draft projects are hidden from customers (admin hasn't published yet)
     return sendError(res, 404, 'Questionnaire not found');
   }
-  if (project.status === 'closed') {
+  if (project.status === 'closed' && !isAdmin) {
     return res.status(410).json({ error: 'This questionnaire has been closed.', project: { name: project.name, closing: project.closing } });
   }
   res.json({
-    project: { name: project.name, tagline: project.tagline, welcome: project.welcome, status: project.status },
-    modules: resolveModules(project)
+    project: { id: project.id, slug: project.slug, name: project.name, tagline: project.tagline, welcome: project.welcome, status: project.status },
+    modules: resolveModules(project),
+    isAdmin
   });
 });
 
@@ -300,12 +329,13 @@ app.post('/api/public/:slug/submit', (req, res) => {
   const row = db.prepare('SELECT * FROM projects WHERE slug = ?').get(req.params.slug);
   if (!row) return sendError(res, 404, 'Questionnaire not found');
   const project = rowToProject(row);
-  if (project.status === 'draft') return sendError(res, 404, 'Questionnaire not found');
-  if (project.status === 'closed') return sendError(res, 410, 'This questionnaire has been closed.');
+  const isAdmin = isValidSessionToken(req.cookies[SESSION_COOKIE]);
+  if (project.status === 'draft' && !isAdmin) return sendError(res, 404, 'Questionnaire not found');
+  if (project.status === 'closed' && !isAdmin) return sendError(res, 410, 'This questionnaire has been closed.');
 
   const body = req.body || {};
-  const name = String(body.customer_name || '').trim();
-  const email = String(body.customer_email || '').trim();
+  const name = String(body.customer_name || '').trim().slice(0, 200);
+  const email = String(body.customer_email || '').trim().slice(0, 200);
   const answers = Array.isArray(body.answers) ? body.answers : [];
 
   if (!name) return sendError(res, 400, 'Please tell us your name.');

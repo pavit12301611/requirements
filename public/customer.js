@@ -45,10 +45,30 @@ function esc(s) {
 }
 
 function render() {
-  const { project, modules } = state.data;
+  const { project, modules, isAdmin } = state.data;
   const sectionCount = modules.length + 1; // +1 for "about you"
 
+  if (project.name) {
+    document.title = `${project.name} — ReqForge`;
+  }
+
+  let adminBannerHTML = '';
+  if (isAdmin && project.status === 'draft') {
+    adminBannerHTML = `
+    <div class="admin-preview-banner">
+      <span>👁️ <b>Admin Preview</b> — This questionnaire is in <b>Draft</b> mode (hidden from customers). To publish, change Status to <b>Live</b> in project settings.</span>
+      <a class="btn btn-ghost btn-sm" href="/#/edit/${project.id || encodeURIComponent(slug)}" target="_self">Edit Project ↗</a>
+    </div>`;
+  } else if (isAdmin && project.status === 'closed') {
+    adminBannerHTML = `
+    <div class="admin-preview-banner" style="background:#fffbeb;border-color:#fde68a;color:#92400e">
+      <span>👁️ <b>Admin Preview</b> — This questionnaire is currently <b>Closed</b> to customers.</span>
+      <a class="btn btn-ghost btn-sm" href="/#/edit/${project.id || encodeURIComponent(slug)}" target="_self">Edit Project ↗</a>
+    </div>`;
+  }
+
   $('#app').innerHTML = `
+  ${adminBannerHTML}
   <header class="cust-header">
     <div class="logo">✓</div>
     <h1>${esc(project.name)}</h1>
@@ -201,7 +221,9 @@ function bindQuestionListeners() {
     };
     buttons.forEach((b, i) => b.addEventListener('click', () => set(i + 1)));
     wrap.addEventListener('mouseover', e => {
-      const n = Number(e.target.dataset.r) || 0;
+      const btn = e.target.closest('.star-btn');
+      if (!btn) return;
+      const n = Number(btn.dataset.r) || 0;
       buttons.forEach((b, i) => b.classList.toggle('on', i < n));
     });
     wrap.addEventListener('mouseleave', () => {
