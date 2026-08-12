@@ -162,8 +162,10 @@ a:hover { text-decoration: underline; }
   border: 1.5px solid var(--line); background: #fff; color: var(--ink);
   padding: 9px 15px; border-radius: 999px; font-size: 13.5px; font-weight: 500;
   cursor: pointer; user-select: none; transition: all .13s ease;
+  outline: none;
 }
 .chip:hover { border-color: #c7cdf0; }
+.chip:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
 .chip .tick {
   width: 16px; height: 16px; border-radius: 5px; border: 1.5px solid #ccd2e6;
   display: grid; place-items: center; font-size: 10px; color: transparent; transition: all .13s;
@@ -179,8 +181,10 @@ a:hover { text-decoration: underline; }
 .star-btn {
   font-size: 30px; line-height: 1; background: none; border: none; cursor: pointer;
   color: #d8dcec; transition: transform .1s ease, color .1s; padding: 2px;
+  outline: none;
 }
 .star-btn:hover { transform: scale(1.18); }
+.star-btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; border-radius: 4px; }
 .star-btn.on { color: #f59e0b; }
 
 /* ---------- progress ---------- */
@@ -200,7 +204,7 @@ a:hover { text-decoration: underline; }
 .project-card h3 { font-size: 17px; }
 .project-card .p-tag { color: var(--muted); font-size: 13.5px; line-height: 1.5; }
 .project-card .p-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
-.project-card .p-foot { display: flex; gap: 8px; margin-top: auto; padding-top: 6px; }
+.project-card .p-foot { display: flex; gap: 8px; margin-top: auto; padding-top: 6px; flex-wrap: wrap; }
 .p-link { font-size: 12.5px; color: var(--muted); font-family: ui-monospace, monospace; word-break: break-all; }
 
 /* login */
@@ -357,4 +361,21 @@ a:hover { text-decoration: underline; }
 @media (max-width: 640px) {
   .page-head .actions { margin-left: 0; }
   .detail-head .d-actions { margin-left: 0; }
+}
+
+@media print {
+  .topbar, .cust-progress, .submit-area, .d-actions, .p-foot, .cust-footer, .share-box button, #q-search, #dash-search, #dash-status {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .card, .sub-card, .section-card {
+    box-shadow: none !important;
+    border: 1px solid #ccc !important;
+  }
+  .sub-body {
+    display: block !important;
+  }
 }
