@@ -42,7 +42,7 @@ Copy `.env.example` to `.env` to customize. Anything you set in the real environ
   🧭 About the project · 📄 Pages & structure · ⚙️ Features & functionality · 🎨 Design & branding · 📝 Content · 🛒 E-commerce · 💰 Budget & pricing · ⏰ Timeline · 🔗 Domain & hosting · 📊 Goals & success · 📣 Marketing & SEO · 💬 Anything else
 - Toggle **whole modules or individual questions** on/off per customer, or **add your own custom questions** (short text, long text, tick boxes, single choice, optional/required).
 - Save → get a **customer link** (`/c/<slug>`) to send to the client.
-- Control status: **draft** (hidden-ish), **live** (link works), **closed** (link shows a "closed" message).
+- Control status: **draft** (hidden from customers — use **Preview** on the project card to check the page), **live** (the shared `/c/<slug>` link works), **closed** (link shows a "closed" message).
 
 ### 2. Customer
 - Opens the link and sees a clean questionnaire built **only from your selection**.

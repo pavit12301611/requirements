@@ -15,7 +15,10 @@ const state = {
   defaultCredentials: false, // true if using default pavit / 5161211 credentials
   dashboardSearch: '',
   dashboardStatusFilter: 'all',
-  questionSearch: ''
+  questionSearch: '',
+  projects: null,            // cached dashboard list
+  _dashSearchFocus: false,
+  _qSearchFocus: false
 };
 window.__state = state; // debug handle
 
@@ -78,6 +81,34 @@ function dateStr(iso) {
   const d = new Date(clean);
   return isNaN(d) ? String(iso) : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
+function projectKey(p) { return p?.id ?? p?.slug; }
+function isUsableId(id) { return Boolean(id) && id !== 'undefined' && id !== 'null'; }
+function customerPath(p) { return `/c/${p.slug}`; }
+function previewPath(p) { return p.preview_path || customerPath(p); }
+function absUrl(path) {
+  try { return new URL(path, location.origin).href; } catch { return path; }
+}
+function routeParts() {
+  if ((!location.hash || location.hash === '#' || location.hash === '#/') && location.pathname) {
+    const pathParts = location.pathname.split('/').filter(Boolean);
+    if (pathParts[0] === 'project' || pathParts[0] === 'edit' || pathParts[0] === 'new') return pathParts;
+  }
+  const hash = location.hash || '#/';
+  const trimmed = hash.startsWith('#') ? hash.slice(1) : hash;
+  return trimmed.split('/').filter(Boolean);
+}
+function snapshotEditing() {
+  const e = state.editing;
+  if (!e) return '';
+  return JSON.stringify({
+    meta: e.meta,
+    modules: e.modules.map(m => ({ id: m.id, on: m.on, selected: [...m.selected].sort(), customs: m.customs }))
+  });
+}
+function isDirty() {
+  return Boolean(state.editing && state.savedHash != null && snapshotEditing() !== state.savedHash);
+}
+function invalidateProjects() { state.projects = null; }
 
 /* ---------------- app shell ---------------- */
 function topbar() {
@@ -154,17 +185,42 @@ async function boot() {
 }
 
 function route() {
-  const hash = location.hash || '#/';
-  if (hash.startsWith('#/project/')) renderDetail(hash.split('/')[2]);
-  else if (hash.startsWith('#/edit/')) renderEditor(hash.split('/')[2]);
-  else if (hash === '#/new') renderEditor(null);
+  const [section, rawId] = routeParts();
+  let id = rawId ? decodeURIComponent(rawId) : '';
+  if (!isUsableId(id)) id = '';
+  if (section === 'project' && id) renderDetail(id);
+  else if (section === 'edit' && id) renderEditor(id);
+  else if (section === 'new') renderEditor(null);
   else renderDashboard();
 }
-window.addEventListener('hashchange', route);
+window.addEventListener('hashchange', e => {
+  if (isDirty() && !confirm('You have unsaved changes. Leave without saving?')) {
+    history.replaceState(null, '', e.oldURL);
+    return;
+  }
+  state._qSearchFocus = false;
+  state._dashSearchFocus = false;
+  route();
+});
+window.addEventListener('beforeunload', e => {
+  if (!isDirty()) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 /* ---------------- dashboard ---------------- */
-async function renderDashboard() {
-  const { projects } = await api('/api/projects');
+async function renderDashboard({ refetch = true } = {}) {
+  try {
+    if (refetch || !state.projects) {
+      const { projects } = await api('/api/projects');
+      state.projects = projects;
+    }
+  } catch (err) {
+    if (err.status === 401) return;
+    toast(err.message || 'Could not load projects', 'err');
+    return;
+  }
+  const projects = state.projects || [];
 
   const filtered = projects.filter(p => {
     const q = state.dashboardSearch.toLowerCase();
@@ -212,15 +268,16 @@ async function renderDashboard() {
             ${badge(p.status)}
           </div>
           ${p.tagline ? `<p class="p-tag">${esc(p.tagline)}</p>` : ''}
+          ${p.status === 'draft' ? `<p class="p-tag" style="color:var(--amber);font-size:12.5px">Hidden from customers until status is Live</p>` : ''}
           <div class="p-meta">
             <span class="badge badge-count">${p.submissions} submission${p.submissions === 1 ? '' : 's'}</span>
             <span class="badge badge-draft" style="background:#f1f2f7;color:#69708a;border-color:var(--line)">${esc(dateStr(p.created_at))}</span>
           </div>
           <div class="p-foot">
-            <a class="btn btn-ghost btn-sm" href="#/project/${p.id}">Open</a>
-            <a class="btn btn-ghost btn-sm" href="#/edit/${p.id}">Edit questions</a>
-            <button class="btn btn-ghost btn-sm" data-duplicate="${p.id}" title="Duplicate project">📋 Clone</button>
-            <a class="btn btn-primary btn-sm" target="_blank" href="/c/${p.slug}">View page →</a>
+            <a class="btn btn-ghost btn-sm" href="#/project/${encodeURIComponent(projectKey(p))}">Open</a>
+            <a class="btn btn-ghost btn-sm" href="#/edit/${encodeURIComponent(projectKey(p))}">Edit questions</a>
+            <button class="btn btn-ghost btn-sm" data-duplicate="${esc(String(projectKey(p)))}" title="Duplicate project">📋 Clone</button>
+            <a class="btn btn-primary btn-sm" target="_blank" rel="noopener" href="${esc(previewPath(p))}">${p.status === 'live' ? 'View page →' : 'Preview →'}</a>
           </div>
         </div>`).join('')}
     </div>` : projects.length ? `
@@ -228,7 +285,7 @@ async function renderDashboard() {
       <div class="big">🔍</div>
       <h3>No projects match your filter</h3>
       <p>Try clearing your search or status filter.</p>
-      <button class="btn btn-ghost" onclick="state.dashboardSearch='';state.dashboardStatusFilter='all';renderDashboard();">Reset filters</button>
+      <button class="btn btn-ghost" id="reset-filters">Reset filters</button>
     </div>` : `
     <div class="card empty">
       <div class="big">📋</div>
@@ -240,12 +297,26 @@ async function renderDashboard() {
 
   $('#dash-search')?.addEventListener('input', e => {
     state.dashboardSearch = e.target.value;
-    renderDashboard();
+    state._dashSearchFocus = true;
+    renderDashboard({ refetch: false });
   });
   $('#dash-status')?.addEventListener('change', e => {
     state.dashboardStatusFilter = e.target.value;
-    renderDashboard();
+    renderDashboard({ refetch: false });
   });
+  $('#reset-filters')?.addEventListener('click', () => {
+    state.dashboardSearch = '';
+    state.dashboardStatusFilter = 'all';
+    state._dashSearchFocus = false;
+    renderDashboard({ refetch: false });
+  });
+  if (state._dashSearchFocus) {
+    const search = $('#dash-search');
+    if (search) {
+      search.focus();
+      try { search.setSelectionRange(search.value.length, search.value.length); } catch { /* ignore */ }
+    }
+  }
 }
 
 // duplicate event listener
@@ -256,8 +327,9 @@ document.addEventListener('click', async e => {
   dupBtn.disabled = true;
   try {
     const { project } = await api(`/api/projects/${id}/duplicate`, { method: 'POST' });
+    invalidateProjects();
     toast(`Cloned project as "${project.name}" ✓`, 'ok');
-    if (location.hash === '#/') renderDashboard();
+    if (!location.hash || location.hash === '#' || location.hash === '#/') renderDashboard();
     else location.hash = `#/edit/${project.id}`;
   } catch (err) { toast(err.message, 'err'); }
   finally { dupBtn.disabled = false; }
@@ -311,12 +383,23 @@ async function renderEditorShell(id) {
       return;
     }
   }
-  if (id && !state.editing) state.editing = buildEditing(project);
-  else if (!id && !state.editing) state.editing = buildEditing(null);
+  if (id && !state.editing) {
+    state.editing = buildEditing(project);
+    state.savedHash = snapshotEditing();
+  } else if (!id && !state.editing) {
+    state.editing = buildEditing(null);
+    state.savedHash = snapshotEditing();
+  }
 
+  paintEditor(id, project);
+}
+
+function paintEditor(id, project) {
   const e = state.editing;
   const isNew = !id;
-  const link = isNew ? null : `/c/${project.slug}`;
+  const shareUrl = isNew ? null : absUrl(customerPath(project));
+  const openUrl = isNew ? null : previewPath(project);
+  const scrollY = window.scrollY;
 
   const qSearch = state.questionSearch.toLowerCase();
   const visibleModules = e.modules.filter(m => {
@@ -343,15 +426,15 @@ async function renderEditorShell(id) {
 
     <div class="editor-grid">
       <div class="editor-side">
-        ${link ? `
+        ${shareUrl ? `
         <div class="card editor-card">
           <h2>🔗 Customer link</h2>
           <div class="share-box">
-            <input class="input mono" readonly value="${esc(link)}" onfocus="this.select()">
-            <button class="btn btn-ghost btn-sm" data-copy="${esc(link)}">Copy</button>
+            <input class="input mono" readonly value="${esc(shareUrl)}" onfocus="this.select()">
+            <button class="btn btn-ghost btn-sm" data-copy="${esc(shareUrl)}">Copy</button>
           </div>
-          <p style="font-size:12.5px;color:var(--muted);margin-top:9px">Send this link to your customer — the page is built automatically from your selection.</p>
-          <a class="btn btn-primary btn-sm btn-block" style="margin-top:10px" target="_blank" href="${esc(link)}">Open customer page ↗</a>
+          <p style="font-size:12.5px;color:var(--muted);margin-top:9px">${e.meta.status === 'live' ? 'Send this link to your customer — the page is built automatically from your selection.' : 'Drafts are hidden from customers. Use Preview to check the page, then set status to Live before sharing.'}</p>
+          <a class="btn btn-primary btn-sm btn-block" style="margin-top:10px" target="_blank" rel="noopener" href="${esc(openUrl)}">${e.meta.status === 'live' ? 'Open customer page ↗' : 'Preview customer page ↗'}</a>
         </div>` : `
         <div class="card editor-card" style="background:var(--grad-soft);border-style:dashed">
           <h2>💡 How it works</h2>
@@ -401,8 +484,17 @@ async function renderEditorShell(id) {
 
   $('#q-search')?.addEventListener('input', e => {
     state.questionSearch = e.target.value;
-    renderEditorShell(id);
+    state._qSearchFocus = true;
+    paintEditor(id, project);
   });
+  if (state._qSearchFocus) {
+    const qs = $('#q-search');
+    if (qs) {
+      qs.focus();
+      try { qs.setSelectionRange(qs.value.length, qs.value.length); } catch { /* ignore */ }
+    }
+  }
+  window.scrollTo(0, scrollY);
 }
 
 function moduleCard(m, qSearch = '') {
@@ -430,7 +522,7 @@ function moduleCard(m, qSearch = '') {
     ${on ? `
     <div class="module-body">
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0 10px;border-bottom:1px solid #f1f2f8;margin-bottom:4px">
-        <span style="font-size:12px;color:var(--muted);font-weight:600">${m.selected.size} of ${m.libQuestions.length} selected</span>
+        <span data-sel-count style="font-size:12px;color:var(--muted);font-weight:600">${m.selected.size} of ${m.libQuestions.length} selected</span>
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" data-select-all="${m.id}">Select All</button>
           <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" data-deselect-all="${m.id}">Deselect All</button>
@@ -561,6 +653,8 @@ document.addEventListener('click', async e => {
   if (qToggle) {
     const qId = e.target.closest('[data-q]').dataset.q;
     qToggle.checked ? mod.selected.add(qId) : mod.selected.delete(qId);
+    const countEl = modEl.querySelector('[data-sel-count]');
+    if (countEl) countEl.textContent = `${mod.selected.size} of ${mod.libQuestions.length} selected`;
     return;
   }
   if (e.target.closest('[data-add-question]')) {
@@ -688,15 +782,19 @@ document.addEventListener('click', async e => {
   };
 
   try {
+    invalidateProjects();
     if (state.editingId) {
       const { project } = await api(`/api/projects/${state.editingId}`, { method: 'PATCH', body: { ...meta, config } });
       state.editing = buildEditing(project);
+      state.savedHash = snapshotEditing();
       toast('Project saved ✓', 'ok');
       if (location.hash !== `#/edit/${project.id}`) location.hash = `#/edit/${project.id}`;
+      else paintEditor(String(project.id), project);
     } else {
-      const { project } = await api('/api/projects', { method: 'POST', body: { name: meta.name } });
-      await api(`/api/projects/${project.id}`, { method: 'PATCH', body: { ...meta, config } });
+      const { project } = await api('/api/projects', { method: 'POST', body: { ...meta, config } });
       state.editing = null;
+      state.editingCustom = null;
+      state.savedHash = null;
       location.hash = `#/edit/${project.id}`;
       toast('Project created — link ready ✓', 'ok');
     }
@@ -724,9 +822,10 @@ async function renderDetail(id) {
     }
     return;
   }
-  const link = `/c/${project.slug}`;
-  const enabled = (project.config.modules || []).length;
-  const totalQ = (project.config.modules || []).reduce((n, m) => n + m.questions.length, 0);
+  const shareUrl = absUrl(customerPath(project));
+  const openUrl = previewPath(project);
+  const enabled = (project.config?.modules || []).length;
+  const totalQ = (project.config?.modules || []).reduce((n, m) => n + (m.questions || []).length, 0);
 
   $('#app').innerHTML = `
   ${topbar()}
@@ -752,10 +851,10 @@ async function renderDetail(id) {
           <span class="spacer"></span>
           <span style="font-size:13px;color:var(--muted);font-weight:600">Customer link:</span>
           <div class="share-box" style="min-width:300px;flex:1">
-            <input class="input mono" readonly value="${esc(link)}" onfocus="this.select()">
-            <button class="btn btn-ghost btn-sm" data-copy="${esc(link)}">Copy</button>
+            <input class="input mono" readonly value="${esc(shareUrl)}" onfocus="this.select()">
+            <button class="btn btn-ghost btn-sm" data-copy="${esc(shareUrl)}">Copy</button>
           </div>
-          <a class="btn btn-primary btn-sm" target="_blank" href="${esc(link)}">Open →</a>
+          <a class="btn btn-primary btn-sm" target="_blank" rel="noopener" href="${esc(openUrl)}">${project.status === 'live' ? 'Open →' : 'Preview →'}</a>
         </div>
       </div>
     </div>
@@ -775,7 +874,7 @@ async function renderDetail(id) {
       <div class="big">🕐</div>
       <h3>No answers yet</h3>
       <p>Send the customer link to your client and their answers will appear here.</p>
-      <button class="btn btn-primary" data-copy="${esc(link)}">Copy customer link</button>
+      <button class="btn btn-primary" data-copy="${esc(shareUrl)}">Copy customer link</button>
     </div>`}
   </div>`;
 
@@ -787,6 +886,7 @@ async function renderDetail(id) {
     if (!confirm(`Delete "${project.name}" and all ${subs.length} submission(s)?`)) return;
     try {
       await api(`/api/projects/${project.id}`, { method: 'DELETE' });
+      invalidateProjects();
       location.hash = '#/';
       toast('Project deleted', 'ok');
     } catch (err) { toast(err.message, 'err'); }
@@ -799,7 +899,7 @@ function renderAnalyticsSummary(subs) {
   const ratings = new Map(); // questionLabel -> array of numbers
 
   for (const s of subs) {
-    for (const a of s.answers) {
+    for (const a of (s.answers || [])) {
       if (a.type === 'checkbox' && Array.isArray(a.value)) {
         if (!counts.has(a.label)) counts.set(a.label, new Map());
         const m = counts.get(a.label);
