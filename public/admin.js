@@ -72,7 +72,12 @@ function fallbackCopy(text, done) {
 function badge(status) {
   return `<span class="badge badge-${status}">${esc(status)}</span>`;
 }
-function dateStr(iso) { return new Date(iso + 'Z').toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); }
+function dateStr(iso) {
+  if (!iso) return '';
+  const clean = String(iso).includes('T') ? iso : String(iso).replace(' ', 'T') + 'Z';
+  const d = new Date(clean);
+  return isNaN(d) ? String(iso) : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
 
 /* ---------------- app shell ---------------- */
 function topbar() {
@@ -959,7 +964,7 @@ function exportSubmissionsCSV(project, subs) {
   for (const s of subs) {
     const answerMap = new Map();
     for (const a of s.answers) {
-      const val = Array.isArray(a.value) ? a.value.join('; ') : String(a.value);
+      const val = Array.isArray(a.value) ? a.value.join('; ') : String(a.value ?? '');
       answerMap.set(a.label, val);
     }
     const row = [
@@ -972,8 +977,8 @@ function exportSubmissionsCSV(project, subs) {
     rows.push(row);
   }
 
-  const csvContent = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const csvContent = rows.map(r => r.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.setAttribute('href', url);
@@ -981,6 +986,7 @@ function exportSubmissionsCSV(project, subs) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  URL.revokeObjectURL(url);
   toast('Exported CSV ✓', 'ok');
 }
 

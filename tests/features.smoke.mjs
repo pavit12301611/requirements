@@ -110,6 +110,17 @@ const pubRes = await req('/api/public/daily-bloom');
 const hasCustomRating = pubRes.json?.modules?.some(m => m.questions.some(q => q.id === 'custom_rating_1' && q.type === 'rating'));
 check('Public API renders custom rating question', hasCustomRating);
 
+// 6. Test Admin Draft Preview
+const adminDraftRes = await req('/api/public/photo-portfolio', { cookie });
+check('Admin can preview draft project (200)', adminDraftRes.status === 200 && adminDraftRes.json?.isAdmin === true);
+
+const custDraftRes = await req('/api/public/photo-portfolio');
+check('Customer cannot view draft project (404)', custDraftRes.status === 404);
+
+// 7. Test project route by slug vs id
+const projBySlug = await req('/api/projects/daily-bloom', { cookie });
+check('Project reachable by slug on admin API (200)', projBySlug.status === 200 && projBySlug.json?.project?.name === 'The Daily Bloom');
+
 server.close();
 console.log(failures ? `\n${failures} FAILURES` : '\nALL FEATURE TESTS PASSED');
 process.exit(failures ? 1 : 0);
