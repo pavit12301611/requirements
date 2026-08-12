@@ -15,8 +15,19 @@ const state = {
 
 async function load() {
   const app = $('#app');
+  if (!slug) {
+    app.innerHTML = `
+      <div class="closed-box card">
+        <div class="big">🔍</div>
+        <h1>Questionnaire not found</h1>
+        <p>This link isn't valid — check with the person who sent it to you.</p>
+      </div>`;
+    return;
+  }
   try {
-    const res = await fetch(`/api/public/${encodeURIComponent(slug)}`);
+    const preview = new URLSearchParams(location.search).get('preview');
+    const qs = preview ? `?preview=${encodeURIComponent(preview)}` : '';
+    const res = await fetch(`/api/public/${encodeURIComponent(slug)}${qs}`, { credentials: 'include' });
     if (res.status === 410) { renderClosed(await res.json()); return; }
     if (!res.ok) throw new Error('not found');
     state.data = await res.json();
@@ -26,7 +37,7 @@ async function load() {
       <div class="closed-box card">
         <div class="big">🔍</div>
         <h1>Questionnaire not found</h1>
-        <p>This link isn't valid — check with the person who sent it to you.</p>
+        <p>This link isn't valid — check with the person who sent it to you. If you just created this project, set its status to Live or open it with Preview from the admin dashboard.</p>
       </div>`;
   }
 }
@@ -42,6 +53,10 @@ function renderClosed(body) {
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function escWithBreaks(s) {
+  return esc(s).replace(/\r\n|\n|\r/g, '<br>');
 }
 
 function render() {
@@ -73,7 +88,7 @@ function render() {
     <div class="logo">✓</div>
     <h1>${esc(project.name)}</h1>
     ${project.tagline ? `<p class="tagline">${esc(project.tagline)}</p>` : ''}
-    ${project.welcome ? `<div class="welcome">${esc(project.welcome)}</div>` : ''}
+    ${project.welcome ? `<div class="welcome">${escWithBreaks(project.welcome)}</div>` : ''}
   </header>
 
   <div class="cust-progress"><div class="wrap">
@@ -359,9 +374,10 @@ async function submitForm(e) {
       }
     }
   }
-  if (!name || !email || state.missing.size) {
+  const emailOk = /^\S+@\S+\.\S+$/.test(email);
+  if (!name || !email || !emailOk || state.missing.size) {
     if (!name) $('#cust-name').focus();
-    else if (!email) $('#cust-email').focus();
+    else if (!email || !emailOk) $('#cust-email').focus();
 
     const bar = $('.submit-area');
     const old = bar.querySelector('.err-note');
@@ -370,7 +386,7 @@ async function submitForm(e) {
     note.className = 'required-note err-note';
     note.style.color = 'var(--red)';
     note.style.fontWeight = '600';
-    note.textContent = state.missing.size ? 'Please complete the highlighted questions.' : 'Please add your name and email.';
+    note.textContent = state.missing.size ? 'Please complete the highlighted questions.' : !emailOk && email ? 'Please provide a valid email address.' : 'Please add your name and email.';
     bar.prepend(note);
 
     const firstTarget = !name ? $('#cust-name') : !email ? $('#cust-email') : $('.q.missing');
@@ -396,6 +412,7 @@ async function submitForm(e) {
     const res = await fetch(`/api/public/${encodeURIComponent(slug)}/submit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ customer_name: name, customer_email: email, answers })
     });
     const body = await res.json();
@@ -420,7 +437,7 @@ function renderThanks(closing) {
   <div class="thanks fade-in">
     <div class="check">✓</div>
     <h1>Thank you — you're all set!</h1>
-    <p>${esc(closing || 'Your answers have been received. We\u2019ll be in touch soon.')}</p>
+    <p>${escWithBreaks(closing || 'Your answers have been received. We\u2019ll be in touch soon.')}</p>
   </div>`;
   document.querySelector('.cust-progress')?.remove();
   window.scrollTo({ top: 0, behavior: 'smooth' });

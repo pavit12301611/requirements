@@ -71,6 +71,55 @@ function isValidSessionToken(token) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// Signed preview links let an admin open a draft/closed questionnaire in a new
+// tab even when the session cookie is not sent (third-party iframe previews,
+// partitioned cookies, some mobile browsers). Tokens are scoped to one slug.
+const PREVIEW_TTL_MS = 1000 * 60 * 60 * 24;
+
+function makePreviewToken(slug) {
+  const payload = `preview.${slug}.${Date.now() + PREVIEW_TTL_MS}`;
+  return `${payload}.${signPayload(payload)}`;
+}
+
+function isValidPreviewToken(token, slug) {
+  if (typeof token !== 'string' || !token || token.length > 512) return false;
+  const dot = token.lastIndexOf('.');
+  if (dot <= 0) return false;
+  const payload = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const m = payload.match(/^preview\.(.+)\.(\d+)$/);
+  if (!m || m[1] !== String(slug)) return false;
+  const exp = Number(m[2]);
+  if (!Number.isFinite(exp) || Date.now() > exp) return false;
+  const expected = signPayload(payload);
+  const a = Buffer.from(sig), b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function presentProject(project) {
+  if (!project?.slug) return project;
+  return {
+    ...project,
+    preview_path: `/c/${encodeURIComponent(project.slug)}?preview=${makePreviewToken(project.slug)}`
+  };
+}
+
+function publicAccess(req, slug) {
+  if (isValidSessionToken(req.cookies[SESSION_COOKIE])) return 'admin';
+  const preview = req.query?.preview;
+  if (preview && isValidPreviewToken(String(preview), slug)) return 'preview';
+  return null;
+}
+
+function sessionCookie(req, token) {
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const secure = proto === 'https' || Boolean(req.secure);
+  const base = token
+    ? `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`
+    : `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  return secure ? `${base}; Secure` : base;
+}
+
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -153,17 +202,16 @@ app.post('/api/login', (req, res) => {
   const username = String(req.body?.username || '').trim();
   const password = String(req.body?.password ?? '');
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-    res.setHeader('Set-Cookie',
-      `${SESSION_COOKIE}=${makeSessionToken()}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`);
+    res.setHeader('Set-Cookie', sessionCookie(req, makeSessionToken()));
     return res.json({ ok: true });
   }
   sendError(res, 401, 'Wrong username or password');
 });
 
-app.post('/api/logout', (_req, res) => {
+app.post('/api/logout', (req, res) => {
   // Stateless tokens: dropping the cookie is the logout. (To revoke tokens for
   // every device at once, change ADMIN_PASSWORD or SESSION_SECRET.)
-  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  res.setHeader('Set-Cookie', sessionCookie(req, ''));
   res.json({ ok: true });
 });
 
@@ -196,7 +244,7 @@ app.get('/api/projects', requireAuth, (_req, res) => {
     SELECT p.*, (SELECT COUNT(*) FROM submissions s WHERE s.project_id = p.id) AS submissions
     FROM projects p ORDER BY p.id DESC
   `).all();
-  res.json({ projects: rows.map(rowToProject) });
+  res.json({ projects: rows.map(row => presentProject(rowToProject(row))) });
 });
 
 app.post('/api/projects', requireAuth, (req, res) => {
@@ -209,20 +257,20 @@ app.post('/api/projects', requireAuth, (req, res) => {
     try { config = normalizeConfig(req.body.config); } catch (e) { return sendError(res, 400, e.message); }
   }
   const status = ['draft', 'live', 'closed'].includes(req.body?.status) ? req.body.status : 'draft';
-  const tagline = String(req.body?.tagline || '').trim();
-  const welcome = String(req.body?.welcome || '').trim();
-  const closing = String(req.body?.closing || '').trim();
+  const tagline = String(req.body?.tagline || '').trim().slice(0, 5000);
+  const welcome = String(req.body?.welcome || '').trim().slice(0, 5000);
+  const closing = String(req.body?.closing || '').trim().slice(0, 5000);
   const r = db.prepare(
     'INSERT INTO projects (slug, name, tagline, welcome, closing, status, config) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).run(slug, name, tagline, welcome, closing, status, JSON.stringify(config));
   const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(r.lastInsertRowid));
-  res.status(201).json({ project: rowToProject(row) });
+  res.status(201).json({ project: presentProject(rowToProject(row)) });
 });
 
 app.get('/api/projects/:id', requireAuth, (req, res) => {
   const row = findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
-  res.json({ project: rowToProject(row) });
+  res.json({ project: presentProject(rowToProject(row)) });
 });
 
 app.patch('/api/projects/:id', requireAuth, (req, res) => {
@@ -245,8 +293,12 @@ app.patch('/api/projects/:id', requireAuth, (req, res) => {
         sets.push('status = ?');
         params.push(req.body[key]);
       } else {
+        const text = String(req.body[key]).trim();
+        const max = key === 'name' ? 200 : 5000;
+        if (key === 'name' && !text) return sendError(res, 400, 'Project name is required');
+        if (text.length > max) return sendError(res, 400, `${key} must be ${max} characters or fewer`);
         sets.push(`${key} = ?`);
-        params.push(String(req.body[key]).trim());
+        params.push(text);
       }
     }
   }
@@ -254,7 +306,7 @@ app.patch('/api/projects/:id', requireAuth, (req, res) => {
   params.push(row.id);
   db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...params);
   const updated = db.prepare('SELECT * FROM projects WHERE id = ?').get(row.id);
-  res.json({ project: rowToProject(updated) });
+  res.json({ project: presentProject(rowToProject(updated)) });
 });
 
 app.delete('/api/projects/:id', requireAuth, (req, res) => {
@@ -280,7 +332,7 @@ app.post('/api/projects/:id/duplicate', requireAuth, (req, res) => {
   ).run(newSlug, newName, source.tagline, source.welcome, source.closing, JSON.stringify(source.config));
 
   const newRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(r.lastInsertRowid));
-  res.status(201).json({ project: rowToProject(newRow) });
+  res.status(201).json({ project: presentProject(rowToProject(newRow)) });
 });
 
 // ---------------------------------------------------------------- submissions (admin)
@@ -310,18 +362,18 @@ app.get('/api/public/:slug', (req, res) => {
   const row = db.prepare('SELECT * FROM projects WHERE slug = ?').get(req.params.slug);
   if (!row) return sendError(res, 404, 'Questionnaire not found');
   const project = rowToProject(row);
-  const isAdmin = isValidSessionToken(req.cookies[SESSION_COOKIE]);
-  if (project.status === 'draft' && !isAdmin) {
+  const access = publicAccess(req, project.slug);
+  if (project.status === 'draft' && !access) {
     // Draft projects are hidden from customers (admin hasn't published yet)
     return sendError(res, 404, 'Questionnaire not found');
   }
-  if (project.status === 'closed' && !isAdmin) {
+  if (project.status === 'closed' && !access) {
     return res.status(410).json({ error: 'This questionnaire has been closed.', project: { name: project.name, closing: project.closing } });
   }
   res.json({
     project: { id: project.id, slug: project.slug, name: project.name, tagline: project.tagline, welcome: project.welcome, status: project.status },
     modules: resolveModules(project),
-    isAdmin
+    isAdmin: Boolean(access)
   });
 });
 
@@ -392,6 +444,9 @@ app.post('/api/public/:slug/submit', (req, res) => {
 
 // ---------------------------------------------------------------- pages
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
+app.get(['/project/:id', '/edit/:id', '/new'], (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
 app.get('/c/:slug', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'customer.html')));
 
 app.use((_req, res) => sendError(res, 404, 'Not found'));

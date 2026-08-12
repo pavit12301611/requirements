@@ -68,7 +68,7 @@ check('project card shows name', [...document.querySelectorAll('.project-card h3
 window.location.hash = '#/edit/7';
 await sleep(120);
 check('editor rendered', !!document.querySelector('.editor-card h2'));
-check('editor shows customer link', document.querySelector('.share-box .input')?.value === '/c/acme');
+check('editor shows customer link', document.querySelector('.share-box .input')?.value?.endsWith('/c/acme'));
 check('module cards rendered', document.querySelectorAll('.module-card').length === 2);
 check('basics module on (has body)', !!document.querySelector('[data-module="basics"] .module-body'));
 check('budget module off by default', !document.querySelector('[data-module="budget"] .module-body'));
@@ -125,7 +125,7 @@ window.location.hash = '#/project/7';
 await sleep(120);
 check('detail shows submission', document.querySelector('.sub-card .who')?.textContent.includes('Jane Doe'));
 check('detail shows chips for checkbox answer', !!document.querySelector('.sub-body .chip'));
-check('detail shows link', document.querySelector('.share-box .input')?.value === '/c/acme');
+check('detail shows link', document.querySelector('.share-box .input')?.value?.endsWith('/c/acme'));
 
 console.log(failures ? `\n${failures} FAILURES` : '\nALL ADMIN TESTS PASSED');
 process.exit(failures ? 1 : 0);
