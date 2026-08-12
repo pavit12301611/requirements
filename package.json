@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node tests/admin.smoke.mjs && node tests/customer.smoke.mjs && node tests/server.smoke.mjs && node tests/editor.switch.mjs && node tests/session.persistence.mjs"
+    "test": "node tests/admin.smoke.mjs && node tests/customer.smoke.mjs && node tests/server.smoke.mjs && node tests/editor.switch.mjs && node tests/session.persistence.mjs && node tests/features.smoke.mjs"
   },
   "engines": {
     "node": "22.x"

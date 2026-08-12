@@ -238,6 +238,25 @@ app.delete('/api/projects/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/projects/:id/duplicate', requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return sendError(res, 400, 'Invalid project ID');
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+  if (!row) return sendError(res, 404, 'Project not found');
+
+  const source = rowToProject(row);
+  const newName = `Copy of ${source.name}`.slice(0, 200);
+  const newSlug = makeSlug(newName);
+
+  const r = db.prepare(
+    `INSERT INTO projects (slug, name, tagline, welcome, closing, status, config)
+     VALUES (?, ?, ?, ?, ?, 'draft', ?)`
+  ).run(newSlug, newName, source.tagline, source.welcome, source.closing, JSON.stringify(source.config));
+
+  const newRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(r.lastInsertRowid));
+  res.status(201).json({ project: rowToProject(newRow) });
+});
+
 // ---------------------------------------------------------------- submissions (admin)
 app.get('/api/projects/:id/submissions', requireAuth, (req, res) => {
   const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(Number(req.params.id));
@@ -246,6 +265,17 @@ app.get('/api/projects/:id/submissions', requireAuth, (req, res) => {
     'SELECT * FROM submissions WHERE project_id = ? ORDER BY id DESC'
   ).all(Number(req.params.id));
   res.json({ submissions: rows.map(rowToSubmission) });
+});
+
+app.delete('/api/projects/:id/submissions/:subId', requireAuth, (req, res) => {
+  const projectId = Number(req.params.id);
+  const subId = Number(req.params.subId);
+  if (!Number.isInteger(projectId) || !Number.isInteger(subId)) {
+    return sendError(res, 400, 'Invalid ID');
+  }
+  const r = db.prepare('DELETE FROM submissions WHERE id = ? AND project_id = ?').run(subId, projectId);
+  if (!r.changes) return sendError(res, 404, 'Submission not found');
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------- public customer API

@@ -5,12 +5,17 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const state = {
-  library: null,        // modules from /api/library
-  editing: null,        // editor state
+  library: null,             // modules from /api/library
+  editing: null,             // editor state
   editingId: null,
+  editingCustom: null,       // ID of custom question currently being edited
   savedHash: null,
-  signedIn: false,      // true once the session has been confirmed
-  adminName: 'Admin'    // admin username (shown in the topbar)
+  signedIn: false,           // true once the session has been confirmed
+  adminName: 'Admin',        // admin username (shown in the topbar)
+  defaultCredentials: false, // true if using default pavit / 5161211 credentials
+  dashboardSearch: '',
+  dashboardStatusFilter: 'all',
+  questionSearch: ''
 };
 window.__state = state; // debug handle
 
@@ -33,8 +38,6 @@ async function api(path, opts = {}) {
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.status = res.status;
     if (res.status === 401 && !path.startsWith('/api/login')) {
-      // Session rejected while navigating: show the sign-in screen, and say why
-      // if the session was previously known-good (expired / server restarted).
       renderLogin(state.signedIn ? 'Your session expired — please sign in again to continue.' : null);
       state.signedIn = false;
     }
@@ -76,6 +79,7 @@ function topbar() {
   return `
   <div class="topbar"><div class="wrap topbar-inner">
     <a class="brand" href="#/"><span class="logo">✓</span> ReqForge</a>
+    ${state.defaultCredentials ? `<span class="badge badge-draft" style="font-size:11px;padding:4px 10px;margin-left:8px" title="Set ADMIN_PASSWORD env var to secure">⚠️ Default Credentials</span>` : ''}
     <span class="spacer"></span>
     <span class="user-chip"><span class="avatar">${esc((state.adminName || 'A').slice(0, 1).toUpperCase())}</span>${esc(state.adminName)}</span>
     <button class="btn btn-ghost btn-sm" onclick="doLogout()">Log out</button>
@@ -131,9 +135,10 @@ async function boot() {
   try {
     const me = await api('/api/me');
     if (me.admin) state.adminName = me.admin;
+    state.defaultCredentials = Boolean(me.defaultCredentials);
     state.signedIn = true;
   } catch (err) {
-    if (err.status !== 401) renderLogin(); // 401 already rendered by api() (keeps its notice)
+    if (err.status !== 401) renderLogin();
     return;
   }
   if (!state.library) {
@@ -155,6 +160,14 @@ window.addEventListener('hashchange', route);
 /* ---------------- dashboard ---------------- */
 async function renderDashboard() {
   const { projects } = await api('/api/projects');
+
+  const filtered = projects.filter(p => {
+    const q = state.dashboardSearch.toLowerCase();
+    const matchSearch = !q || p.name.toLowerCase().includes(q) || (p.tagline && p.tagline.toLowerCase().includes(q));
+    const matchStatus = state.dashboardStatusFilter === 'all' || p.status === state.dashboardStatusFilter;
+    return matchSearch && matchStatus;
+  });
+
   $('#app').innerHTML = `
   ${topbar()}
   <div class="wrap fade-in">
@@ -167,9 +180,27 @@ async function renderDashboard() {
         <a class="btn btn-primary" href="#/new">+ New project</a>
       </div>
     </div>
+
     ${projects.length ? `
+    <div class="card editor-card" style="margin-bottom:18px;padding:14px 18px">
+      <div class="row" style="flex-wrap:wrap;gap:12px">
+        <div style="flex:1;min-width:220px">
+          <input class="input" id="dash-search" placeholder="🔍 Search projects by name or tagline..." value="${esc(state.dashboardSearch)}">
+        </div>
+        <div style="width:160px">
+          <select class="select" id="dash-status">
+            <option value="all" ${state.dashboardStatusFilter === 'all' ? 'selected' : ''}>All Statuses</option>
+            <option value="live" ${state.dashboardStatusFilter === 'live' ? 'selected' : ''}>Live</option>
+            <option value="draft" ${state.dashboardStatusFilter === 'draft' ? 'selected' : ''}>Draft</option>
+            <option value="closed" ${state.dashboardStatusFilter === 'closed' ? 'selected' : ''}>Closed</option>
+          </select>
+        </div>
+      </div>
+    </div>` : ''}
+
+    ${filtered.length ? `
     <div class="project-grid">
-      ${projects.map(p => `
+      ${filtered.map(p => `
         <div class="card project-card">
           <div class="p-top">
             <h3>${esc(p.name || 'Untitled project')}</h3>
@@ -183,9 +214,16 @@ async function renderDashboard() {
           <div class="p-foot">
             <a class="btn btn-ghost btn-sm" href="#/project/${p.id}">Open</a>
             <a class="btn btn-ghost btn-sm" href="#/edit/${p.id}">Edit questions</a>
+            <button class="btn btn-ghost btn-sm" data-duplicate="${p.id}" title="Duplicate project">📋 Clone</button>
             <a class="btn btn-primary btn-sm" target="_blank" href="/c/${p.slug}">View page →</a>
           </div>
         </div>`).join('')}
+    </div>` : projects.length ? `
+    <div class="card empty">
+      <div class="big">🔍</div>
+      <h3>No projects match your filter</h3>
+      <p>Try clearing your search or status filter.</p>
+      <button class="btn btn-ghost" onclick="state.dashboardSearch='';state.dashboardStatusFilter='all';renderDashboard();">Reset filters</button>
     </div>` : `
     <div class="card empty">
       <div class="big">📋</div>
@@ -194,7 +232,31 @@ async function renderDashboard() {
       <a class="btn btn-primary" href="#/new">+ New project</a>
     </div>`}
   </div>`;
+
+  $('#dash-search')?.addEventListener('input', e => {
+    state.dashboardSearch = e.target.value;
+    renderDashboard();
+  });
+  $('#dash-status')?.addEventListener('change', e => {
+    state.dashboardStatusFilter = e.target.value;
+    renderDashboard();
+  });
 }
+
+// duplicate event listener
+document.addEventListener('click', async e => {
+  const dupBtn = e.target.closest('[data-duplicate]');
+  if (!dupBtn) return;
+  const id = dupBtn.dataset.duplicate;
+  dupBtn.disabled = true;
+  try {
+    const { project } = await api(`/api/projects/${id}/duplicate`, { method: 'POST' });
+    toast(`Cloned project as "${project.name}" ✓`, 'ok');
+    if (location.hash === '#/') renderDashboard();
+    else location.hash = `#/edit/${project.id}`;
+  } catch (err) { toast(err.message, 'err'); }
+  finally { dupBtn.disabled = false; }
+});
 
 /* ---------------- editor ---------------- */
 function buildEditing(project) {
@@ -237,7 +299,6 @@ async function renderEditorShell(id) {
     try {
       project = (await api(`/api/projects/${id}`)).project;
     } catch (err) {
-      // 401 → api() already rendered the login screen; otherwise go back to the list.
       if (err.status !== 401) {
         toast(err.message || 'Could not load project', 'err');
         if (location.hash !== '#/') location.hash = '#/';
@@ -251,6 +312,15 @@ async function renderEditorShell(id) {
   const e = state.editing;
   const isNew = !id;
   const link = isNew ? null : `/c/${project.slug}`;
+
+  const qSearch = state.questionSearch.toLowerCase();
+  const visibleModules = e.modules.filter(m => {
+    if (!qSearch) return true;
+    const matchMod = m.title.toLowerCase().includes(qSearch) || m.blurb.toLowerCase().includes(qSearch);
+    const matchQ = m.libQuestions.some(q => q.label.toLowerCase().includes(qSearch)) ||
+      m.customs.some(q => q.label.toLowerCase().includes(qSearch));
+    return matchMod || matchQ;
+  });
 
   $('#app').innerHTML = `
   ${topbar()}
@@ -313,17 +383,32 @@ async function renderEditorShell(id) {
       </div>
 
       <div class="editor-main">
-        <div class="card editor-card">
+        <div class="card editor-card" style="padding:16px 20px">
           <h2>🧩 Question bank <span style="color:var(--muted);font-weight:500;font-size:12.5px">— tick what you want to ask this customer</span></h2>
+          <div style="margin-top:10px">
+            <input class="input" id="q-search" placeholder="🔍 Search questions... (e.g. budget, logo, payment, domain)" value="${esc(state.questionSearch)}">
+          </div>
         </div>
-        ${e.modules.map(m => moduleCard(m)).join('')}
+        ${visibleModules.map(m => moduleCard(m, qSearch)).join('')}
       </div>
     </div>
   </div>`;
+
+  $('#q-search')?.addEventListener('input', e => {
+    state.questionSearch = e.target.value;
+    renderEditorShell(id);
+  });
 }
 
-function moduleCard(m) {
+function moduleCard(m, qSearch = '') {
   const on = m.on;
+  const filteredLib = qSearch
+    ? m.libQuestions.filter(q => q.label.toLowerCase().includes(qSearch) || m.title.toLowerCase().includes(qSearch))
+    : m.libQuestions;
+  const filteredCustom = qSearch
+    ? m.customs.filter(q => q.label.toLowerCase().includes(qSearch) || m.title.toLowerCase().includes(qSearch))
+    : m.customs;
+
   return `
   <div class="module-card ${on ? 'on' : ''}" data-module="${m.id}">
     <div class="module-head" data-toggle-module>
@@ -339,7 +424,15 @@ function moduleCard(m) {
     </div>
     ${on ? `
     <div class="module-body">
-      ${m.libQuestions.map(q => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0 10px;border-bottom:1px solid #f1f2f8;margin-bottom:4px">
+        <span style="font-size:12px;color:var(--muted);font-weight:600">${m.selected.size} of ${m.libQuestions.length} selected</span>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" data-select-all="${m.id}">Select All</button>
+          <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" data-deselect-all="${m.id}">Deselect All</button>
+        </div>
+      </div>
+
+      ${filteredLib.map(q => `
         <div class="q-row" data-q="${q.id}">
           <span class="q-type">${q.type}</span>
           <span class="q-label">${esc(q.label)}${q.required ? ' <span style="color:var(--red)">*</span>' : ''}</span>
@@ -348,13 +441,23 @@ function moduleCard(m) {
             <span class="track"></span>
           </label>
         </div>`).join('')}
-      ${m.customs.map(q => `
+
+      ${filteredCustom.map((q, idx) => `
+        ${state.editingCustom === q.id ? customEditForm(q, m.id) : `
         <div class="q-row custom" data-custom="${q.id}">
           <span class="q-type">${q.type}</span>
-          <span class="q-label">✏️ ${esc(q.label)}</span>
-          <button class="q-del" data-del-custom="${q.id}" title="Remove">✕</button>
-        </div>`).join('')}
+          <span class="q-label">✏️ ${esc(q.label)}${q.required ? ' <span style="color:var(--red)">*</span>' : ''}</span>
+          <div style="display:flex;gap:4px;align-items:center">
+            ${idx > 0 ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:11px" data-move-custom="up" data-cid="${q.id}">▲</button>` : ''}
+            ${idx < m.customs.length - 1 ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:11px" data-move-custom="down" data-cid="${q.id}">▼</button>` : ''}
+            <button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:11px" data-edit-custom="${q.id}" title="Edit question">✏️</button>
+            <button class="q-del" data-del-custom="${q.id}" title="Remove">✕</button>
+          </div>
+        </div>`}
+      `).join('')}
+
       <button class="add-q" data-add-question>+ Add custom question</button>
+
       <div class="custom-editor hidden" data-custom-editor>
         <input class="input" data-c-label placeholder="Your question (e.g. How many locations do you have?)">
         <div class="row2">
@@ -363,16 +466,51 @@ function moduleCard(m) {
             <option value="textarea">Long text</option>
             <option value="checkbox">Tick boxes (multi-select)</option>
             <option value="radio">Single choice</option>
+            <option value="rating">1–5 Star Rating</option>
           </select>
           <input class="input" data-c-options placeholder="Options, comma separated (for tick boxes / single choice)">
         </div>
-        <div class="mini"><input type="checkbox" data-c-required id="req-${m.id}"> <label for="req-${m.id}">Required</label>
+        <div class="row2">
+          <input class="input" data-c-help placeholder="Help text / instructions (optional)">
+          <input class="input" data-c-placeholder placeholder="Input placeholder text (optional)">
+        </div>
+        <div class="mini">
+          <input type="checkbox" data-c-required id="req-${m.id}"> <label for="req-${m.id}">Required</label>
           <span class="spacer"></span>
           <button class="btn btn-primary btn-sm" data-c-add>Add question</button>
           <button class="btn btn-ghost btn-sm" data-c-cancel>Cancel</button>
         </div>
       </div>
     </div>` : ''}
+  </div>`;
+}
+
+function customEditForm(q, modId) {
+  return `
+  <div class="custom-editor" data-edit-custom-form="${q.id}" style="margin:8px 0">
+    <div style="font-weight:600;font-size:13px;color:var(--accent);margin-bottom:4px">✏️ Edit Custom Question</div>
+    <input class="input" data-e-label value="${esc(q.label)}" placeholder="Question text">
+    <div class="row2">
+      <select class="select" data-e-type>
+        <option value="text" ${q.type === 'text' ? 'selected' : ''}>Short text</option>
+        <option value="textarea" ${q.type === 'textarea' ? 'selected' : ''}>Long text</option>
+        <option value="checkbox" ${q.type === 'checkbox' ? 'selected' : ''}>Tick boxes (multi-select)</option>
+        <option value="radio" ${q.type === 'radio' ? 'selected' : ''}>Single choice</option>
+        <option value="rating" ${q.type === 'rating' ? 'selected' : ''}>1–5 Star Rating</option>
+      </select>
+      <input class="input" data-e-options value="${esc((q.options || []).join(', '))}" placeholder="Options, comma separated">
+    </div>
+    <div class="row2">
+      <input class="input" data-e-help value="${esc(q.help || '')}" placeholder="Help text / instructions (optional)">
+      <input class="input" data-e-placeholder value="${esc(q.placeholder || '')}" placeholder="Input placeholder text (optional)">
+    </div>
+    <div class="mini">
+      <input type="checkbox" data-e-required id="ereq-${q.id}" ${q.required ? 'checked' : ''}>
+      <label for="ereq-${q.id}">Required</label>
+      <span class="spacer"></span>
+      <button class="btn btn-primary btn-sm" data-e-save="${q.id}">Save changes</button>
+      <button class="btn btn-ghost btn-sm" data-e-cancel="${q.id}">Cancel</button>
+    </div>
   </div>`;
 }
 
@@ -388,14 +526,26 @@ document.addEventListener('click', async e => {
   const mod = editing.modules.find(m => m.id === modId);
   if (!mod) return;
 
-  // module head click → toggle (ignore clicks that land on the switch itself;
-  // those are handled by the [data-module-on] branch below to avoid double-toggling)
+  // select all / deselect all
+  const selAll = e.target.closest('[data-select-all]');
+  if (selAll) {
+    mod.libQuestions.forEach(q => mod.selected.add(q.id));
+    renderEditorShell(state.editingId);
+    return;
+  }
+  const deselAll = e.target.closest('[data-deselect-all]');
+  if (deselAll) {
+    mod.selected.clear();
+    renderEditorShell(state.editingId);
+    return;
+  }
+
+  // module head click
   if (e.target.closest('[data-toggle-module]') && !e.target.closest('.switch')) {
     mod.on = !mod.on;
     renderEditorShell(state.editingId);
     return;
   }
-  // toggle switch inside the module head → mirror the native checkbox state
   const modSwitch = e.target.closest('[data-module-on]');
   if (modSwitch) {
     mod.on = modSwitch.checked;
@@ -421,18 +571,84 @@ document.addEventListener('click', async e => {
     const label = modEl.querySelector('[data-c-label]').value.trim();
     const type = modEl.querySelector('[data-c-type]').value;
     const optsRaw = modEl.querySelector('[data-c-options]').value;
+    const help = modEl.querySelector('[data-c-help]').value.trim();
+    const placeholder = modEl.querySelector('[data-c-placeholder]').value.trim();
     const required = modEl.querySelector('[data-c-required]').checked;
     if (!label) { toast('Question text is required', 'err'); return; }
     if ((type === 'checkbox' || type === 'radio') && !optsRaw.trim()) {
       toast('Add options (comma separated)', 'err'); return;
     }
     const options = optsRaw.split(',').map(s => s.trim()).filter(Boolean);
-    const q = { id: 'custom_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), custom: true, type, label, options, required };
+    const q = { id: 'custom_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), custom: true, type, label, options, help, placeholder, required };
     mod.customs.push(q);
     renderEditorShell(state.editingId);
-    toast('Custom question added', 'ok');
+    toast('Custom question added ✓', 'ok');
     return;
   }
+
+  // Edit custom question button
+  const editBtn = e.target.closest('[data-edit-custom]');
+  if (editBtn) {
+    state.editingCustom = editBtn.dataset.editCustom;
+    renderEditorShell(state.editingId);
+    return;
+  }
+  const editCancelBtn = e.target.closest('[data-e-cancel]');
+  if (editCancelBtn) {
+    state.editingCustom = null;
+    renderEditorShell(state.editingId);
+    return;
+  }
+  const editSaveBtn = e.target.closest('[data-e-save]');
+  if (editSaveBtn) {
+    const qid = editSaveBtn.dataset.eSave;
+    const q = mod.customs.find(cq => qid === cq.id);
+    if (q) {
+      const form = modEl.querySelector(`[data-edit-custom-form="${qid}"]`);
+      const label = form.querySelector('[data-e-label]').value.trim();
+      const type = form.querySelector('[data-e-type]').value;
+      const optsRaw = form.querySelector('[data-e-options]').value;
+      const help = form.querySelector('[data-e-help]').value.trim();
+      const placeholder = form.querySelector('[data-e-placeholder]').value.trim();
+      const required = form.querySelector('[data-e-required]').checked;
+      if (!label) { toast('Question text is required', 'err'); return; }
+      if ((type === 'checkbox' || type === 'radio') && !optsRaw.trim()) {
+        toast('Add options (comma separated)', 'err'); return;
+      }
+      q.label = label;
+      q.type = type;
+      q.options = optsRaw.split(',').map(s => s.trim()).filter(Boolean);
+      q.help = help;
+      q.placeholder = placeholder;
+      q.required = required;
+    }
+    state.editingCustom = null;
+    renderEditorShell(state.editingId);
+    toast('Custom question updated ✓', 'ok');
+    return;
+  }
+
+  // Move custom question up/down
+  const moveBtn = e.target.closest('[data-move-custom]');
+  if (moveBtn) {
+    const dir = moveBtn.dataset.moveCustom;
+    const cid = moveBtn.dataset.cid;
+    const idx = mod.customs.findIndex(cq => cq.id === cid);
+    if (idx > -1) {
+      if (dir === 'up' && idx > 0) {
+        const temp = mod.customs[idx - 1];
+        mod.customs[idx - 1] = mod.customs[idx];
+        mod.customs[idx] = temp;
+      } else if (dir === 'down' && idx < mod.customs.length - 1) {
+        const temp = mod.customs[idx + 1];
+        mod.customs[idx + 1] = mod.customs[idx];
+        mod.customs[idx] = temp;
+      }
+      renderEditorShell(state.editingId);
+    }
+    return;
+  }
+
   const del = e.target.closest('[data-del-custom]');
   if (del) {
     mod.customs = mod.customs.filter(q => q.id !== del.dataset.delCustom);
@@ -461,7 +677,7 @@ document.addEventListener('click', async e => {
       id: m.id,
       questions: [
         ...m.libQuestions.filter(q => m.selected.has(q.id)).map(q => q.id),
-        ...m.customs.map(q => ({ id: q.id, type: q.type, label: q.label, options: q.options, required: q.required }))
+        ...m.customs.map(q => ({ id: q.id, type: q.type, label: q.label, options: q.options, help: q.help, placeholder: q.placeholder, required: q.required }))
       ]
     }))
   };
@@ -496,8 +712,6 @@ async function renderDetail(id) {
       api(`/api/projects/${id}/submissions`).then(r => r.submissions)
     ]);
   } catch (err) {
-    // 401 → api() already rendered the login screen; don't clobber it.
-    // Other failures (e.g. 404 after the project was deleted) → back to the list.
     if (err.status !== 401) {
       toast(err.message || 'Could not load project', 'err');
       if (location.hash !== '#/') location.hash = '#/';
@@ -521,6 +735,7 @@ async function renderDetail(id) {
         <div class="d-actions">
           <a class="btn btn-ghost" href="#/"><span style="font-size:15px">←</span> All projects</a>
           <a class="btn btn-ghost" href="#/edit/${project.id}">✏️ Edit questions</a>
+          <button class="btn btn-ghost" data-duplicate="${project.id}">📋 Clone</button>
           <button class="btn btn-danger btn-sm" data-del-project>Delete</button>
         </div>
       </div>
@@ -540,7 +755,13 @@ async function renderDetail(id) {
       </div>
     </div>
 
-    <h2 style="font-size:17px;margin:26px 0 14px">💌 Submissions <span style="color:var(--muted);font-weight:500">(${subs.length})</span></h2>
+    ${subs.length ? renderAnalyticsSummary(subs) : ''}
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:26px 0 14px">
+      <h2 style="font-size:17px;margin:0">💌 Submissions <span style="color:var(--muted);font-weight:500">(${subs.length})</span></h2>
+      ${subs.length ? `<button class="btn btn-ghost btn-sm" id="export-csv">📥 Export CSV</button>` : ''}
+    </div>
+
     ${subs.length ? `
     <div class="submission-list" style="padding-top:0">
       ${subs.map((s, i) => subCard(s, i)).join('')}
@@ -553,6 +774,9 @@ async function renderDetail(id) {
     </div>`}
   </div>`;
 
+  // Attach CSV export
+  $('#export-csv')?.addEventListener('click', () => exportSubmissionsCSV(project, subs));
+
   const del = $('#app').querySelector('[data-del-project]');
   if (del) del.onclick = async () => {
     if (!confirm(`Delete "${project.name}" and all ${subs.length} submission(s)?`)) return;
@@ -564,19 +788,87 @@ async function renderDetail(id) {
   };
 }
 
+function renderAnalyticsSummary(subs) {
+  // Aggregate choice and rating answers across all submissions
+  const counts = new Map(); // questionLabel -> Map(choice -> count)
+  const ratings = new Map(); // questionLabel -> array of numbers
+
+  for (const s of subs) {
+    for (const a of s.answers) {
+      if (a.type === 'checkbox' && Array.isArray(a.value)) {
+        if (!counts.has(a.label)) counts.set(a.label, new Map());
+        const m = counts.get(a.label);
+        for (const v of a.value) m.set(v, (m.get(v) || 0) + 1);
+      } else if (a.type === 'radio' && typeof a.value === 'string') {
+        if (!counts.has(a.label)) counts.set(a.label, new Map());
+        const m = counts.get(a.label);
+        m.set(a.value, (m.get(a.value) || 0) + 1);
+      } else if (a.type === 'rating') {
+        if (!ratings.has(a.label)) ratings.set(a.label, []);
+        ratings.get(a.label).push(Number(a.value));
+      }
+    }
+  }
+
+  if (counts.size === 0 && ratings.size === 0) return '';
+
+  return `
+  <div class="card editor-card" style="margin-top:20px;padding:20px">
+    <h2 style="font-size:16px;margin-bottom:14px">📊 Response Breakdown</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));gap:16px">
+      ${[...counts.entries()].map(([label, choiceMap]) => {
+        const total = [...choiceMap.values()].reduce((a, b) => a + b, 0);
+        return `
+        <div style="background:#f8f9fe;border:1px solid var(--line);border-radius:12px;padding:14px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px">${esc(label)}</div>
+          ${[...choiceMap.entries()].sort((a, b) => b[1] - a[1]).map(([choice, cnt]) => {
+            const pct = Math.round((cnt / total) * 100);
+            return `
+            <div style="margin-bottom:8px">
+              <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink);margin-bottom:3px">
+                <span>${esc(choice)}</span>
+                <span style="font-weight:600">${cnt} (${pct}%)</span>
+              </div>
+              <div class="progress-track" style="height:6px"><div class="progress-bar" style="width:${pct}%"></div></div>
+            </div>`;
+          }).join('')}
+        </div>`;
+      }).join('')}
+
+      ${[...ratings.entries()].map(([label, vals]) => {
+        const avg = (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1);
+        return `
+        <div style="background:#f8f9fe;border:1px solid var(--line);border-radius:12px;padding:14px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:8px">${esc(label)}</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:28px;font-weight:800;color:var(--amber)">${avg}</span>
+            <span style="font-size:13px;color:var(--muted)">out of 5 stars (${vals.length} rating${vals.length === 1 ? '' : 's'})</span>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
 function subCard(s, i) {
   const initials = s.customer_name.split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase() || '?';
   const answered = s.answers.length;
   return `
   <div class="sub-card" data-sub="${s.id}">
-    <button class="sub-head">
-      <span class="sub-avatar">${esc(initials)}</span>
-      <span>
-        <span class="who">${esc(s.customer_name)} ${s.customer_email ? `<span style="color:var(--muted);font-weight:500">· ${esc(s.customer_email)}</span>` : ''}</span>
-        <div class="when">${esc(dateStr(s.created_at))} · ${answered} answer${answered === 1 ? '' : 's'}</div>
-      </span>
-      <span class="chev">▾</span>
-    </button>
+    <div style="display:flex;align-items:center;background:#fff">
+      <button class="sub-head" style="flex:1">
+        <span class="sub-avatar">${esc(initials)}</span>
+        <span>
+          <span class="who">${esc(s.customer_name)} ${s.customer_email ? `<span style="color:var(--muted);font-weight:500">· ${esc(s.customer_email)}</span>` : ''}</span>
+          <div class="when">${esc(dateStr(s.created_at))} · ${answered} answer${answered === 1 ? '' : 's'}</div>
+        </span>
+        <span class="chev">▾</span>
+      </button>
+      <div style="display:flex;gap:6px;padding-right:14px">
+        <button class="btn btn-ghost btn-sm" data-copy-markdown="${s.id}" title="Copy submission as Markdown">📋 Markdown</button>
+        <button class="btn btn-danger btn-sm" data-del-sub="${s.id}" title="Delete submission">🗑️</button>
+      </div>
+    </div>
     <div class="sub-body">
       ${s.answers.map(a => `
         <div class="answer-row">
@@ -604,6 +896,93 @@ document.addEventListener('click', e => {
   const head = e.target.closest('[data-sub] .sub-head');
   if (head) head.closest('.sub-card').classList.toggle('open');
 });
+
+// Delete individual submission & Copy Markdown
+document.addEventListener('click', async e => {
+  const delSubBtn = e.target.closest('[data-del-sub]');
+  if (delSubBtn) {
+    const subCard = delSubBtn.closest('[data-sub]');
+    const subId = delSubBtn.dataset.delSub;
+    const projId = location.hash.split('/')[2];
+    if (!confirm('Delete this submission?')) return;
+    try {
+      await api(`/api/projects/${projId}/submissions/${subId}`, { method: 'DELETE' });
+      toast('Submission deleted ✓', 'ok');
+      renderDetail(projId);
+    } catch (err) { toast(err.message, 'err'); }
+    return;
+  }
+
+  const copyMdBtn = e.target.closest('[data-copy-markdown]');
+  if (copyMdBtn) {
+    const subId = Number(copyMdBtn.dataset.copyMarkdown);
+    const projId = location.hash.split('/')[2];
+    try {
+      const subs = await api(`/api/projects/${projId}/submissions`).then(r => r.submissions);
+      const sub = subs.find(s => s.id === subId);
+      if (sub) {
+        const md = getSubmissionMarkdown(sub);
+        copyText(md, 'Submission copied as Markdown ✓');
+      }
+    } catch (err) { toast(err.message, 'err'); }
+  }
+});
+
+function getSubmissionMarkdown(s) {
+  let md = `# Submission from ${s.customer_name} (${s.customer_email || 'No email'})\n`;
+  md += `*Submitted at: ${s.created_at}*\n\n`;
+  for (const a of s.answers) {
+    md += `### ${a.label}\n`;
+    if (Array.isArray(a.value)) md += a.value.map(v => `- ${v}`).join('\n') + '\n\n';
+    else md += `${a.value}\n\n`;
+  }
+  return md;
+}
+
+function exportSubmissionsCSV(project, subs) {
+  if (!subs.length) return;
+  // Collect all unique question labels
+  const questionLabels = [];
+  const labelSet = new Set();
+  for (const s of subs) {
+    for (const a of s.answers) {
+      if (!labelSet.has(a.label)) {
+        labelSet.add(a.label);
+        questionLabels.push(a.label);
+      }
+    }
+  }
+
+  const headers = ['Submission ID', 'Customer Name', 'Customer Email', 'Submitted At', ...questionLabels];
+  const rows = [headers];
+
+  for (const s of subs) {
+    const answerMap = new Map();
+    for (const a of s.answers) {
+      const val = Array.isArray(a.value) ? a.value.join('; ') : String(a.value);
+      answerMap.set(a.label, val);
+    }
+    const row = [
+      s.id,
+      s.customer_name,
+      s.customer_email,
+      s.created_at,
+      ...questionLabels.map(l => answerMap.get(l) || '')
+    ];
+    rows.push(row);
+  }
+
+  const csvContent = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `submissions-${project.slug || 'project'}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  toast('Exported CSV ✓', 'ok');
+}
 
 /* ---------------- go ---------------- */
 boot();
