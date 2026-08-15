@@ -17,10 +17,12 @@ npm start          # → http://localhost:3000
 ```
 
 - **Admin app:** http://localhost:3000 — sign in with username `pavit` / password `5161211` (change via the `ADMIN_USERNAME` and `ADMIN_PASSWORD` env vars)
-- **Demo customer page:** http://localhost:3000/c/daily-bloom
+- **Customer page:** http://localhost:3000/c/<slug> — the link is generated when you create a project
 - **Tests:** `npm test`
 
-Requires Node 22+ (uses the built-in `node:sqlite` — no native compile step). Data is stored in `data/requirements.db` locally (gitignored; delete it to reset to demo data), or automatically in `/tmp/reqforge-data/requirements.db` when deployed to Vercel or other serverless environments.
+Requires Node 22+ (uses the built-in `node:sqlite` — no native compile step). Data is stored in `data/requirements.db` locally (gitignored; delete it to start over with an empty database), or automatically in `/tmp/reqforge-data/requirements.db` when deployed to Vercel or other serverless environments.
+
+The database starts **empty** — no sample projects are created for you. Sign in and hit **+ New project** to make your first one.
 
 ### Configuration
 

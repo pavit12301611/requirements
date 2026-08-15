@@ -67,6 +67,16 @@ try {
 
   const meA = await req(base, '/api/me', { cookie });
   check('cookie authenticates on process A', meA.status === 200);
+
+  // The database starts empty, so create the project the "Open" route needs.
+  // Both processes share DATA_DIR, so process B sees it too.
+  const createdA = await req(base, '/api/projects', {
+    method: 'POST', cookie,
+    body: { name: 'Session Test Project', status: 'live' }
+  });
+  check('project created on process A', createdA.status === 201);
+  const projectId = createdA.json.project.id;
+
   serverA.kill('SIGKILL');
 
   // ---- process B: same cookie, completely fresh process ------------------
@@ -79,12 +89,19 @@ try {
   const projectsB = await req(baseB, '/api/projects', { cookie });
   check('projects list authenticates on process B', projectsB.status === 200 && Array.isArray(projectsB.json?.projects));
 
-  const oneB = await req(baseB, `/api/projects/${projectsB.json.projects[0].id}`, { cookie });
+  check('project created on A is visible on B', projectsB.json.projects.some(p => p.id === projectId));
+
+  const oneB = await req(baseB, `/api/projects/${projectId}`, { cookie });
   check('project detail authenticates on process B (the "Open" button route)', oneB.status === 200);
 
   // ---- tampered / bogus cookies still rejected ----------------------------
   const parts = cookie.split('.');
-  parts[parts.length - 1] = 'A' + parts[parts.length - 1].slice(1); // corrupt the signature
+  // Corrupt the signature. Swapping in a fixed letter is not enough: roughly
+  // 1.6% of base64url signatures already start with that letter, leaving the
+  // cookie untouched and valid — which made this check fail at random. Pick a
+  // replacement that always differs from the current first character.
+  const sig = parts[parts.length - 1];
+  parts[parts.length - 1] = (sig[0] === 'A' ? 'B' : 'A') + sig.slice(1);
   const tampered = await req(baseB, '/api/me', { cookie: parts.join('.') });
   check('tampered signature rejected (401)', tampered.status === 401);
 

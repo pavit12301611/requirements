@@ -11,6 +11,7 @@ const state = {
   editingCustom: null,       // ID of custom question currently being edited
   savedHash: null,
   signedIn: false,           // true once the session has been confirmed
+  sessionExpired: false,     // true after a 401 kicked a signed-in admin out
   adminName: 'Admin',        // admin username (shown in the topbar)
   defaultCredentials: false, // true if using default pavit / 5161211 credentials
   dashboardSearch: '',
@@ -41,8 +42,16 @@ async function api(path, opts = {}) {
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.status = res.status;
     if (res.status === 401 && !path.startsWith('/api/login')) {
-      renderLogin(state.signedIn ? 'Your session expired — please sign in again to continue.' : null);
+      // Views such as the project detail fire several requests at once
+      // (Promise.all). When a session expires they all return 401, and each one
+      // lands here. Only the first still sees `signedIn === true`, so a naive
+      // re-render would immediately repaint the login screen without the
+      // explanation — the notice would flash and vanish. Clear the flag first,
+      // then keep showing the message for the rest of this burst.
+      const expired = state.signedIn || state.sessionExpired;
       state.signedIn = false;
+      state.sessionExpired = expired;
+      renderLogin(expired ? 'Your session expired — please sign in again to continue.' : null);
     }
     throw err;
   }
@@ -88,6 +97,16 @@ function previewPath(p) { return p.preview_path || customerPath(p); }
 function absUrl(path) {
   try { return new URL(path, location.origin).href; } catch { return path; }
 }
+// The id of the project currently on screen, whatever URL style got us here.
+// Reading `location.hash.split('/')[2]` breaks on the server-rendered path
+// routes (/project/7), where the hash is empty and the id ends up "undefined".
+function currentProjectId() {
+  const [section, rawId] = routeParts();
+  if (section !== 'project' || !rawId) return '';
+  const id = decodeURIComponent(rawId);
+  return isUsableId(id) ? id : '';
+}
+
 function routeParts() {
   if ((!location.hash || location.hash === '#' || location.hash === '#/') && location.pathname) {
     const pathParts = location.pathname.split('/').filter(Boolean);
@@ -167,12 +186,32 @@ window.doLogin = async function (e) {
 };
 
 /* ---------------- boot & router ---------------- */
+// The server renders the same SPA for /project/:id, /edit/:id and /new, but the
+// app navigates with hashes. If we leave the deep path in the URL it keeps
+// winning over the hash (routeParts falls back to the pathname whenever the
+// hash is empty or "#/"), so going "home" or deleting a project re-rendered the
+// old project and flashed a bogus "Project not found" error. Rewrite the path
+// route into its hash equivalent once, up front, so there is a single source of
+// truth for the rest of the session. replaceState does not fire hashchange, so
+// the caller still routes explicitly.
+function normalizePathRoute() {
+  const hash = location.hash;
+  if (hash && hash !== '#' && hash !== '#/') return;
+  const parts = location.pathname.split('/').filter(Boolean);
+  if (!['project', 'edit', 'new'].includes(parts[0])) return;
+  try {
+    history.replaceState(null, '', `${location.origin}/#/${parts.join('/')}`);
+  } catch { /* history unavailable — the pathname fallback still routes */ }
+}
+
 async function boot() {
+  normalizePathRoute();
   try {
     const me = await api('/api/me');
     if (me.admin) state.adminName = me.admin;
     state.defaultCredentials = Boolean(me.defaultCredentials);
     state.signedIn = true;
+    state.sessionExpired = false;
   } catch (err) {
     if (err.status !== 401) renderLogin();
     return;
@@ -220,6 +259,10 @@ async function renderDashboard({ refetch = true } = {}) {
     toast(err.message || 'Could not load projects', 'err');
     return;
   }
+  // A render that started before the admin signed out (or before the session
+  // expired) must not paint over the login screen when its request finally
+  // resolves. Bail out instead.
+  if (!state.signedIn) return;
   const projects = state.projects || [];
 
   const filtered = projects.filter(p => {
@@ -395,6 +438,10 @@ async function renderEditorShell(id) {
 }
 
 function paintEditor(id, project) {
+  // A render that started before the admin signed out (or before the session
+  // expired) must not paint over the login screen when its request finally
+  // resolves. Bail out instead.
+  if (!state.signedIn) return;
   const e = state.editing;
   const isNew = !id;
   const shareUrl = isNew ? null : absUrl(customerPath(project));
@@ -822,6 +869,10 @@ async function renderDetail(id) {
     }
     return;
   }
+  // A render that started before the admin signed out (or before the session
+  // expired) must not paint over the login screen when its request finally
+  // resolves. Bail out instead.
+  if (!state.signedIn) return;
   const shareUrl = absUrl(customerPath(project));
   const openUrl = previewPath(project);
   const enabled = (project.config?.modules || []).length;
@@ -1006,9 +1057,9 @@ document.addEventListener('click', e => {
 document.addEventListener('click', async e => {
   const delSubBtn = e.target.closest('[data-del-sub]');
   if (delSubBtn) {
-    const subCard = delSubBtn.closest('[data-sub]');
     const subId = delSubBtn.dataset.delSub;
-    const projId = location.hash.split('/')[2];
+    const projId = currentProjectId();
+    if (!projId) { toast('Could not tell which project this is — reload the page.', 'err'); return; }
     if (!confirm('Delete this submission?')) return;
     try {
       await api(`/api/projects/${projId}/submissions/${subId}`, { method: 'DELETE' });
@@ -1021,7 +1072,8 @@ document.addEventListener('click', async e => {
   const copyMdBtn = e.target.closest('[data-copy-markdown]');
   if (copyMdBtn) {
     const subId = Number(copyMdBtn.dataset.copyMarkdown);
-    const projId = location.hash.split('/')[2];
+    const projId = currentProjectId();
+    if (!projId) { toast('Could not tell which project this is — reload the page.', 'err'); return; }
     try {
       const subs = await api(`/api/projects/${projId}/submissions`).then(r => r.submissions);
       const sub = subs.find(s => s.id === subId);

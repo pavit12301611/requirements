@@ -122,6 +122,22 @@ function sessionCookie(req, token) {
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+
+// A malformed or oversized JSON body must not fall through to Express' default
+// error page: that returns an HTML stack trace (leaking absolute server paths
+// and dependency versions) to a client that asked for JSON. Answer in the same
+// shape as every other API error so the frontend can surface `error`.
+app.use((err, _req, res, next) => {
+  if (!err) return next();
+  if (err.type === 'entity.too.large') {
+    return sendError(res, 413, 'That request was too large (2mb max).');
+  }
+  if (err.status === 400 || err instanceof SyntaxError) {
+    return sendError(res, 400, 'Invalid JSON in request body.');
+  }
+  return next(err);
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------------------------------------------------------------- helpers
@@ -450,6 +466,15 @@ app.get(['/project/:id', '/edit/:id', '/new'], (_req, res) => {
 app.get('/c/:slug', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'customer.html')));
 
 app.use((_req, res) => sendError(res, 404, 'Not found'));
+
+// Last-resort handler: an unexpected throw (a SQLite failure, a bad row, …)
+// should still produce JSON, and the stack belongs in the server log — not in
+// the HTTP response.
+app.use((err, _req, res, _next) => {
+  console.error('Unhandled server error:', err);
+  if (res.headersSent) return;
+  sendError(res, 500, 'Something went wrong on our end. Please try again.');
+});
 
 if (!process.env.VERCEL && !process.env.VERCEL_ENV && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
   app.listen(PORT, '0.0.0.0', () => {
