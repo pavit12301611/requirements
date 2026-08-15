@@ -88,6 +88,16 @@ function previewPath(p) { return p.preview_path || customerPath(p); }
 function absUrl(path) {
   try { return new URL(path, location.origin).href; } catch { return path; }
 }
+// The id of the project currently on screen, whatever URL style got us here.
+// Reading `location.hash.split('/')[2]` breaks on the server-rendered path
+// routes (/project/7), where the hash is empty and the id ends up "undefined".
+function currentProjectId() {
+  const [section, rawId] = routeParts();
+  if (section !== 'project' || !rawId) return '';
+  const id = decodeURIComponent(rawId);
+  return isUsableId(id) ? id : '';
+}
+
 function routeParts() {
   if ((!location.hash || location.hash === '#' || location.hash === '#/') && location.pathname) {
     const pathParts = location.pathname.split('/').filter(Boolean);
@@ -167,7 +177,26 @@ window.doLogin = async function (e) {
 };
 
 /* ---------------- boot & router ---------------- */
+// The server renders the same SPA for /project/:id, /edit/:id and /new, but the
+// app navigates with hashes. If we leave the deep path in the URL it keeps
+// winning over the hash (routeParts falls back to the pathname whenever the
+// hash is empty or "#/"), so going "home" or deleting a project re-rendered the
+// old project and flashed a bogus "Project not found" error. Rewrite the path
+// route into its hash equivalent once, up front, so there is a single source of
+// truth for the rest of the session. replaceState does not fire hashchange, so
+// the caller still routes explicitly.
+function normalizePathRoute() {
+  const hash = location.hash;
+  if (hash && hash !== '#' && hash !== '#/') return;
+  const parts = location.pathname.split('/').filter(Boolean);
+  if (!['project', 'edit', 'new'].includes(parts[0])) return;
+  try {
+    history.replaceState(null, '', `${location.origin}/#/${parts.join('/')}`);
+  } catch { /* history unavailable — the pathname fallback still routes */ }
+}
+
 async function boot() {
+  normalizePathRoute();
   try {
     const me = await api('/api/me');
     if (me.admin) state.adminName = me.admin;
@@ -1006,9 +1035,9 @@ document.addEventListener('click', e => {
 document.addEventListener('click', async e => {
   const delSubBtn = e.target.closest('[data-del-sub]');
   if (delSubBtn) {
-    const subCard = delSubBtn.closest('[data-sub]');
     const subId = delSubBtn.dataset.delSub;
-    const projId = location.hash.split('/')[2];
+    const projId = currentProjectId();
+    if (!projId) { toast('Could not tell which project this is — reload the page.', 'err'); return; }
     if (!confirm('Delete this submission?')) return;
     try {
       await api(`/api/projects/${projId}/submissions/${subId}`, { method: 'DELETE' });
@@ -1021,7 +1050,8 @@ document.addEventListener('click', async e => {
   const copyMdBtn = e.target.closest('[data-copy-markdown]');
   if (copyMdBtn) {
     const subId = Number(copyMdBtn.dataset.copyMarkdown);
-    const projId = location.hash.split('/')[2];
+    const projId = currentProjectId();
+    if (!projId) { toast('Could not tell which project this is — reload the page.', 'err'); return; }
     try {
       const subs = await api(`/api/projects/${projId}/submissions`).then(r => r.submissions);
       const sub = subs.find(s => s.id === subId);
