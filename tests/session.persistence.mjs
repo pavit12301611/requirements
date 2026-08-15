@@ -67,6 +67,16 @@ try {
 
   const meA = await req(base, '/api/me', { cookie });
   check('cookie authenticates on process A', meA.status === 200);
+
+  // The database starts empty, so create the project the "Open" route needs.
+  // Both processes share DATA_DIR, so process B sees it too.
+  const createdA = await req(base, '/api/projects', {
+    method: 'POST', cookie,
+    body: { name: 'Session Test Project', status: 'live' }
+  });
+  check('project created on process A', createdA.status === 201);
+  const projectId = createdA.json.project.id;
+
   serverA.kill('SIGKILL');
 
   // ---- process B: same cookie, completely fresh process ------------------
@@ -79,7 +89,9 @@ try {
   const projectsB = await req(baseB, '/api/projects', { cookie });
   check('projects list authenticates on process B', projectsB.status === 200 && Array.isArray(projectsB.json?.projects));
 
-  const oneB = await req(baseB, `/api/projects/${projectsB.json.projects[0].id}`, { cookie });
+  check('project created on A is visible on B', projectsB.json.projects.some(p => p.id === projectId));
+
+  const oneB = await req(baseB, `/api/projects/${projectId}`, { cookie });
   check('project detail authenticates on process B (the "Open" button route)', oneB.status === 200);
 
   // ---- tampered / bogus cookies still rejected ----------------------------

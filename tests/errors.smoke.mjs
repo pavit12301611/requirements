@@ -66,7 +66,16 @@ check('oversized body → does not leak server paths',
   !big.text.includes('node_modules'), big.text.slice(0, 160));
 
 // ---- the public submit endpoint behaves the same ------------------------
-const pubBad = await fetch(base + '/api/public/daily-bloom/submit', {
+// Create a live project to post at (the database starts empty).
+const created = await raw('/api/projects', JSON.stringify({
+  name: 'Error Handler Public Check',
+  status: 'live',
+  config: { modules: [{ id: 'basics', questions: ['basics.name', 'basics.one_liner'] }] }
+}));
+const publicSlug = created.json?.project?.slug;
+check('fixture: live project for the public endpoint', Boolean(publicSlug), created.text.slice(0, 120));
+
+const pubBad = await fetch(base + `/api/public/${publicSlug}/submit`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: '{oops'

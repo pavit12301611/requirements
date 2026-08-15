@@ -8,6 +8,7 @@ process.env.DATA_DIR = path.join(os.tmpdir(), `reqfeat-${process.pid}-${Date.now
 fs.mkdirSync(process.env.DATA_DIR, { recursive: true });
 
 const app = (await import('../server.js')).default;
+const { createLiveProject, createDraftProject, shopAnswers } = await import('./helpers/fixtures.mjs');
 
 const server = await new Promise((resolve) => {
   const s = app.listen(0, '127.0.0.1', () => resolve(s));
@@ -39,10 +40,14 @@ const login = await req('/api/login', { method: 'POST', body: { username: 'pavit
 const cookie = login.token;
 check('Login successful', login.status === 200);
 
-// 2. Fetch projects
+// 2. Create the projects this suite works with (the database starts empty).
+const bloomProj = await createLiveProject(req, cookie);
+const draftProj = await createDraftProject(req, cookie);
+check('Created live project', !!bloomProj?.id && bloomProj.status === 'live');
+
 const projectsRes = await req('/api/projects', { cookie });
-const bloomProj = projectsRes.json.projects.find(p => p.slug === 'daily-bloom');
-check('Found bloom project', !!bloomProj);
+check('New project appears in the project list',
+  projectsRes.json.projects.some(p => p.id === bloomProj.id));
 
 // 3. Test Duplicate Project API
 const dupRes = await req(`/api/projects/${bloomProj.id}/duplicate`, { method: 'POST', cookie });
@@ -51,18 +56,12 @@ check('Duplicated project name starts with Copy of', dupRes.json?.project?.name?
 check('Duplicated project status is draft', dupRes.json?.project?.status === 'draft');
 
 // 4. Test Submission Creation & Individual Submission Deletion
-const submitRes = await req('/api/public/daily-bloom/submit', {
+const submitRes = await req(`/api/public/${bloomProj.slug}/submit`, {
   method: 'POST',
   body: {
     customer_name: 'ToDelete Client',
     customer_email: 'delete@example.com',
-    answers: [
-      { id: 'basics.name', label: 'Name?', type: 'text', value: 'Bloom' },
-      { id: 'basics.one_liner', label: 'Liner?', type: 'textarea', value: 'Flowers' },
-      { id: 'pages.pages', label: 'Pages?', type: 'checkbox', value: ['Home'] },
-      { id: 'features.features', label: 'Features?', type: 'checkbox', value: ['Contact form'] },
-      { id: 'budget.budget', label: 'Budget?', type: 'radio', value: '$3,000 – $7,000' }
-    ]
+    answers: shopAnswers
   }
 });
 check('Submission created', submitRes.status === 201);
@@ -106,20 +105,21 @@ const patchRes = await req(`/api/projects/${bloomProj.id}`, {
 });
 check('PATCH with custom rating question accepted', patchRes.status === 200);
 
-const pubRes = await req('/api/public/daily-bloom');
+const pubRes = await req(`/api/public/${bloomProj.slug}`);
 const hasCustomRating = pubRes.json?.modules?.some(m => m.questions.some(q => q.id === 'custom_rating_1' && q.type === 'rating'));
 check('Public API renders custom rating question', hasCustomRating);
 
 // 6. Test Admin Draft Preview
-const adminDraftRes = await req('/api/public/photo-portfolio', { cookie });
+const adminDraftRes = await req(`/api/public/${draftProj.slug}`, { cookie });
 check('Admin can preview draft project (200)', adminDraftRes.status === 200 && adminDraftRes.json?.isAdmin === true);
 
-const custDraftRes = await req('/api/public/photo-portfolio');
+const custDraftRes = await req(`/api/public/${draftProj.slug}`);
 check('Customer cannot view draft project (404)', custDraftRes.status === 404);
 
 // 7. Test project route by slug vs id
-const projBySlug = await req('/api/projects/daily-bloom', { cookie });
-check('Project reachable by slug on admin API (200)', projBySlug.status === 200 && projBySlug.json?.project?.name === 'The Daily Bloom');
+const projBySlug = await req(`/api/projects/${bloomProj.slug}`, { cookie });
+check('Project reachable by slug on admin API (200)',
+  projBySlug.status === 200 && projBySlug.json?.project?.id === bloomProj.id);
 
 server.close();
 console.log(failures ? `\n${failures} FAILURES` : '\nALL FEATURE TESTS PASSED');
