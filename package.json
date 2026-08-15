@@ -7,12 +7,13 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node tests/admin.smoke.mjs && node tests/customer.smoke.mjs && node tests/server.smoke.mjs && node tests/editor.switch.mjs && node tests/session.persistence.mjs && node tests/features.smoke.mjs && node tests/open-project.mjs"
+    "test": "node tests/admin.smoke.mjs && node tests/customer.smoke.mjs && node tests/server.smoke.mjs && node tests/editor.switch.mjs && node tests/session.persistence.mjs && node tests/features.smoke.mjs && node tests/open-project.mjs && node tests/admin.e2e.mjs && node tests/customer.e2e.mjs && node tests/storage.turso.mjs && node tests/storage.corrupt.mjs"
   },
   "engines": {
     "node": "22.x"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.4",
     "express": "^4.21.2"
   },
   "devDependencies": {

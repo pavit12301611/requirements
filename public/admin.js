@@ -13,6 +13,8 @@ const state = {
   signedIn: false,           // true once the session has been confirmed
   adminName: 'Admin',        // admin username (shown in the topbar)
   defaultCredentials: false, // true if using default pavit / 5161211 credentials
+  detailId: null,            // project id of the currently open detail view
+  ephemeralStorage: false,   // true when the backend stores data in temp storage
   dashboardSearch: '',
   dashboardStatusFilter: 'all',
   questionSearch: '',
@@ -116,6 +118,7 @@ function topbar() {
   <div class="topbar"><div class="wrap topbar-inner">
     <a class="brand" href="#/"><span class="logo">✓</span> ReqForge</a>
     ${state.defaultCredentials ? `<span class="badge badge-draft" style="font-size:11px;padding:4px 10px;margin-left:8px" title="Set ADMIN_PASSWORD env var to secure">⚠️ Default Credentials</span>` : ''}
+    ${state.ephemeralStorage ? `<span class="badge badge-draft" style="font-size:11px;padding:4px 10px;margin-left:8px" title="The backend has no persistent database — data resets on restarts. Set TURSO_DATABASE_URL + TURSO_AUTH_TOKEN for durable storage.">⚠️ Temporary storage — data will reset</span>` : ''}
     <span class="spacer"></span>
     <span class="user-chip"><span class="avatar">${esc((state.adminName || 'A').slice(0, 1).toUpperCase())}</span>${esc(state.adminName)}</span>
     <button class="btn btn-ghost btn-sm" onclick="doLogout()">Log out</button>
@@ -172,6 +175,7 @@ async function boot() {
     const me = await api('/api/me');
     if (me.admin) state.adminName = me.admin;
     state.defaultCredentials = Boolean(me.defaultCredentials);
+    state.ephemeralStorage = Boolean(me.storage?.ephemeral);
     state.signedIn = true;
   } catch (err) {
     if (err.status !== 401) renderLogin();
@@ -814,6 +818,7 @@ async function renderDetail(id) {
       api(`/api/projects/${id}`).then(r => r.project),
       api(`/api/projects/${id}/submissions`).then(r => r.submissions)
     ]);
+    state.detailId = String(project.id);
   } catch (err) {
     if (err.status !== 401) {
       toast(err.message || 'Could not load project', 'err');
@@ -1003,12 +1008,15 @@ document.addEventListener('click', e => {
 });
 
 // Delete individual submission & Copy Markdown
+// Note: the project id comes from state (set by renderDetail), NOT from the
+// URL — the detail page is also reachable via /project/<id> pathname routes
+// where location.hash is empty, which used to break both buttons.
 document.addEventListener('click', async e => {
   const delSubBtn = e.target.closest('[data-del-sub]');
   if (delSubBtn) {
-    const subCard = delSubBtn.closest('[data-sub]');
     const subId = delSubBtn.dataset.delSub;
-    const projId = location.hash.split('/')[2];
+    const projId = state.detailId;
+    if (!projId) return;
     if (!confirm('Delete this submission?')) return;
     try {
       await api(`/api/projects/${projId}/submissions/${subId}`, { method: 'DELETE' });
@@ -1021,7 +1029,8 @@ document.addEventListener('click', async e => {
   const copyMdBtn = e.target.closest('[data-copy-markdown]');
   if (copyMdBtn) {
     const subId = Number(copyMdBtn.dataset.copyMarkdown);
-    const projId = location.hash.split('/')[2];
+    const projId = state.detailId;
+    if (!projId) return;
     try {
       const subs = await api(`/api/projects/${projId}/submissions`).then(r => r.submissions);
       const sub = subs.find(s => s.id === subId);

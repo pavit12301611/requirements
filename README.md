@@ -20,7 +20,35 @@ npm start          # → http://localhost:3000
 - **Demo customer page:** http://localhost:3000/c/daily-bloom
 - **Tests:** `npm test`
 
-Requires Node 22+ (uses the built-in `node:sqlite` — no native compile step). Data is stored in `data/requirements.db` locally (gitignored; delete it to reset to demo data), or automatically in `/tmp/reqforge-data/requirements.db` when deployed to Vercel or other serverless environments.
+Requires Node 22+ (uses the built-in `node:sqlite` — no native compile step).
+
+### Where data lives (important!)
+
+| Where you run it | Storage | Notes |
+|------------------|---------|-------|
+| Your own machine | `data/requirements.db` (gitignored; delete it to reset to demo data) | ✅ durable |
+| Single-instance host with a persistent disk (Railway, Render, Fly.io + volume, a VPS…) | `./data` or set `DATA_DIR` | ✅ durable |
+| **Vercel / serverless platforms** | `/tmp/…` — **ephemeral!** | ⚠️ Demo data only: every cold start re-seeds and writes can disappear. **Set `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`** to get durable data (see below). |
+
+### Durable data on Vercel (serverless)
+
+Serverless platforms wipe the filesystem between requests, so a file-based
+SQLite database cannot be the source of truth there. ReqForge supports a
+**remote Turso / libSQL database** (SQLite-compatible, free tier available):
+
+1. Create a free database at [turso.tech](https://turso.tech) (or any libSQL server).
+2. Copy its connection string (`libsql://<db>-<org>.turso.io`) and auth token.
+3. Add them as env vars on your Vercel project (Settings → Environment Variables):
+   - `TURSO_DATABASE_URL`
+   - `TURSO_AUTH_TOKEN`
+4. Redeploy. The backend now reads/writes the remote database — data survives
+   restarts, redeploys and multiple function instances.
+
+If you prefer not to use a remote database, run the app on any host with a
+persistent disk instead (see the table above) — no extra configuration needed.
+The admin top bar shows a **"Temporary storage"** warning badge whenever the
+backend is running without durable storage, and `/api/health` reports the
+current storage mode.
 
 ### Configuration
 
@@ -33,6 +61,8 @@ Copy `.env.example` to `.env` to customize. Anything you set in the real environ
 | `SESSION_SECRET` | derived from credentials | Key for signing admin session cookies (set explicitly to keep sessions valid across credential rotations) |
 | `PORT`           | `3000`       | Port the server listens on                   |
 | `DATA_DIR`       | `./data`     | Where `requirements.db` is stored             |
+| `TURSO_DATABASE_URL` | *(unset)* | Remote Turso/libSQL database URL — enables durable data on serverless platforms |
+| `TURSO_AUTH_TOKEN`   | *(unset)* | Auth token for the remote database           |
 
 ## How it works
 
@@ -55,9 +85,10 @@ Copy `.env.example` to `.env` to customize. Anything you set in the real environ
 
 | Layer    | Choice                                             |
 |----------|----------------------------------------------------|
-| Backend  | Node.js + Express, SQLite via built-in `node:sqlite` |
+| Backend  | Node.js + Express; SQLite via built-in `node:sqlite` (local), or Turso/libSQL via `@libsql/client` (serverless) |
 | Frontend | Vanilla JS SPAs (admin) + auto-generated questionnaire (customer), no build step |
 | Auth     | Username + password login (env `ADMIN_USERNAME` default `pavit`, `ADMIN_PASSWORD` default `5161211`) with signed, stateless session cookies — sessions survive restarts and work across serverless instances (optional `SESSION_SECRET` env) |
+| Deployment | Vercel (`vercel.json` routes only pages/API through the server function; static assets are served by the CDN) or any Node host |
 
 ## API (summary)
 
