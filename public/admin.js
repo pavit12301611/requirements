@@ -11,6 +11,7 @@ const state = {
   editingCustom: null,       // ID of custom question currently being edited
   savedHash: null,
   signedIn: false,           // true once the session has been confirmed
+  sessionExpired: false,     // true after a 401 kicked a signed-in admin out
   adminName: 'Admin',        // admin username (shown in the topbar)
   defaultCredentials: false, // true if using default pavit / 5161211 credentials
   dashboardSearch: '',
@@ -41,8 +42,16 @@ async function api(path, opts = {}) {
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.status = res.status;
     if (res.status === 401 && !path.startsWith('/api/login')) {
-      renderLogin(state.signedIn ? 'Your session expired — please sign in again to continue.' : null);
+      // Views such as the project detail fire several requests at once
+      // (Promise.all). When a session expires they all return 401, and each one
+      // lands here. Only the first still sees `signedIn === true`, so a naive
+      // re-render would immediately repaint the login screen without the
+      // explanation — the notice would flash and vanish. Clear the flag first,
+      // then keep showing the message for the rest of this burst.
+      const expired = state.signedIn || state.sessionExpired;
       state.signedIn = false;
+      state.sessionExpired = expired;
+      renderLogin(expired ? 'Your session expired — please sign in again to continue.' : null);
     }
     throw err;
   }
@@ -202,6 +211,7 @@ async function boot() {
     if (me.admin) state.adminName = me.admin;
     state.defaultCredentials = Boolean(me.defaultCredentials);
     state.signedIn = true;
+    state.sessionExpired = false;
   } catch (err) {
     if (err.status !== 401) renderLogin();
     return;
@@ -249,6 +259,10 @@ async function renderDashboard({ refetch = true } = {}) {
     toast(err.message || 'Could not load projects', 'err');
     return;
   }
+  // A render that started before the admin signed out (or before the session
+  // expired) must not paint over the login screen when its request finally
+  // resolves. Bail out instead.
+  if (!state.signedIn) return;
   const projects = state.projects || [];
 
   const filtered = projects.filter(p => {
@@ -424,6 +438,10 @@ async function renderEditorShell(id) {
 }
 
 function paintEditor(id, project) {
+  // A render that started before the admin signed out (or before the session
+  // expired) must not paint over the login screen when its request finally
+  // resolves. Bail out instead.
+  if (!state.signedIn) return;
   const e = state.editing;
   const isNew = !id;
   const shareUrl = isNew ? null : absUrl(customerPath(project));
@@ -851,6 +869,10 @@ async function renderDetail(id) {
     }
     return;
   }
+  // A render that started before the admin signed out (or before the session
+  // expired) must not paint over the login screen when its request finally
+  // resolves. Bail out instead.
+  if (!state.signedIn) return;
   const shareUrl = absUrl(customerPath(project));
   const openUrl = previewPath(project);
   const enabled = (project.config?.modules || []).length;
