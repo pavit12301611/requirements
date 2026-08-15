@@ -96,7 +96,12 @@ try {
 
   // ---- tampered / bogus cookies still rejected ----------------------------
   const parts = cookie.split('.');
-  parts[parts.length - 1] = 'A' + parts[parts.length - 1].slice(1); // corrupt the signature
+  // Corrupt the signature. Swapping in a fixed letter is not enough: roughly
+  // 1.6% of base64url signatures already start with that letter, leaving the
+  // cookie untouched and valid — which made this check fail at random. Pick a
+  // replacement that always differs from the current first character.
+  const sig = parts[parts.length - 1];
+  parts[parts.length - 1] = (sig[0] === 'A' ? 'B' : 'A') + sig.slice(1);
   const tampered = await req(baseB, '/api/me', { cookie: parts.join('.') });
   check('tampered signature rejected (401)', tampered.status === 401);
 
