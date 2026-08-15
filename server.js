@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  db, makeSlug, rowToProject, rowToSubmission, resolveModules, defaultConfig
+  db, makeSlug, rowToProject, rowToSubmission, resolveModules, defaultConfig, storageInfo
 } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -124,6 +124,10 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Async route handlers must not be allowed to turn a rejected promise into a
+// process crash — funnel every error into a JSON response instead.
+const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
 // ---------------------------------------------------------------- helpers
 function parseCookies(req) {
   const out = {};
@@ -217,19 +221,23 @@ app.post('/api/logout', (req, res) => {
 
 app.get('/api/me', (req, res) => {
   if (isValidSessionToken(req.cookies[SESSION_COOKIE])) {
-    return res.json({ ok: true, admin: ADMIN_USERNAME, defaultCredentials: DEFAULT_CREDENTIALS });
+    return res.json({ ok: true, admin: ADMIN_USERNAME, defaultCredentials: DEFAULT_CREDENTIALS, storage: storageInfo });
   }
   sendError(res, 401, 'Not signed in');
 });
 
-function findProjectRow(idOrSlug) {
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, storage: storageInfo, node: process.version });
+});
+
+async function findProjectRow(idOrSlug) {
   if (idOrSlug === null || idOrSlug === undefined || idOrSlug === '') return null;
   const idNum = Number(idOrSlug);
   if (Number.isInteger(idNum) && idNum > 0) {
-    const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(idNum);
+    const row = await db.get('SELECT * FROM projects WHERE id = ?', idNum);
     if (row) return row;
   }
-  return db.prepare('SELECT * FROM projects WHERE slug = ?').get(String(idOrSlug));
+  return db.get('SELECT * FROM projects WHERE slug = ?', String(idOrSlug));
 }
 
 // ---------------------------------------------------------------- library
@@ -239,19 +247,19 @@ app.get('/api/library', requireAuth, (_req, res) => {
 });
 
 // ---------------------------------------------------------------- projects (admin)
-app.get('/api/projects', requireAuth, (_req, res) => {
-  const rows = db.prepare(`
+app.get('/api/projects', requireAuth, wrap(async (_req, res) => {
+  const rows = await db.all(`
     SELECT p.*, (SELECT COUNT(*) FROM submissions s WHERE s.project_id = p.id) AS submissions
     FROM projects p ORDER BY p.id DESC
-  `).all();
+  `);
   res.json({ projects: rows.map(row => presentProject(rowToProject(row))) });
-});
+}));
 
-app.post('/api/projects', requireAuth, (req, res) => {
+app.post('/api/projects', requireAuth, wrap(async (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) return sendError(res, 400, 'Project name is required');
   if (name.length > 200) return sendError(res, 400, 'Project name must be 200 characters or fewer');
-  const slug = makeSlug(name);
+  const slug = await makeSlug(name);
   let config = defaultConfig();
   if (req.body?.config) {
     try { config = normalizeConfig(req.body.config); } catch (e) { return sendError(res, 400, e.message); }
@@ -260,21 +268,22 @@ app.post('/api/projects', requireAuth, (req, res) => {
   const tagline = String(req.body?.tagline || '').trim().slice(0, 5000);
   const welcome = String(req.body?.welcome || '').trim().slice(0, 5000);
   const closing = String(req.body?.closing || '').trim().slice(0, 5000);
-  const r = db.prepare(
-    'INSERT INTO projects (slug, name, tagline, welcome, closing, status, config) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(slug, name, tagline, welcome, closing, status, JSON.stringify(config));
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(r.lastInsertRowid));
+  const r = await db.run(
+    'INSERT INTO projects (slug, name, tagline, welcome, closing, status, config) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    slug, name, tagline, welcome, closing, status, JSON.stringify(config)
+  );
+  const row = await db.get('SELECT * FROM projects WHERE id = ?', Number(r.lastInsertRowid));
   res.status(201).json({ project: presentProject(rowToProject(row)) });
-});
+}));
 
-app.get('/api/projects/:id', requireAuth, (req, res) => {
-  const row = findProjectRow(req.params.id);
+app.get('/api/projects/:id', requireAuth, wrap(async (req, res) => {
+  const row = await findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
   res.json({ project: presentProject(rowToProject(row)) });
-});
+}));
 
-app.patch('/api/projects/:id', requireAuth, (req, res) => {
-  const row = findProjectRow(req.params.id);
+app.patch('/api/projects/:id', requireAuth, wrap(async (req, res) => {
+  const row = await findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
 
   const allowed = ['name', 'tagline', 'welcome', 'closing', 'status', 'config'];
@@ -304,62 +313,64 @@ app.patch('/api/projects/:id', requireAuth, (req, res) => {
   }
   if (!sets.length) return sendError(res, 400, 'Nothing to update');
   params.push(row.id);
-  db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...params);
-  const updated = db.prepare('SELECT * FROM projects WHERE id = ?').get(row.id);
+  await db.run(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`, ...params);
+  const updated = await db.get('SELECT * FROM projects WHERE id = ?', row.id);
   res.json({ project: presentProject(rowToProject(updated)) });
-});
+}));
 
-app.delete('/api/projects/:id', requireAuth, (req, res) => {
-  const row = findProjectRow(req.params.id);
+app.delete('/api/projects/:id', requireAuth, wrap(async (req, res) => {
+  const row = await findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
-  db.prepare('DELETE FROM submissions WHERE project_id = ?').run(row.id);
-  const r = db.prepare('DELETE FROM projects WHERE id = ?').run(row.id);
+  await db.run('DELETE FROM submissions WHERE project_id = ?', row.id);
+  const r = await db.run('DELETE FROM projects WHERE id = ?', row.id);
   if (!r.changes) return sendError(res, 404, 'Project not found');
   res.json({ ok: true });
-});
+}));
 
-app.post('/api/projects/:id/duplicate', requireAuth, (req, res) => {
-  const row = findProjectRow(req.params.id);
+app.post('/api/projects/:id/duplicate', requireAuth, wrap(async (req, res) => {
+  const row = await findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
 
   const source = rowToProject(row);
   const newName = `Copy of ${source.name}`.slice(0, 200);
-  const newSlug = makeSlug(newName);
+  const newSlug = await makeSlug(newName);
 
-  const r = db.prepare(
+  const r = await db.run(
     `INSERT INTO projects (slug, name, tagline, welcome, closing, status, config)
-     VALUES (?, ?, ?, ?, ?, 'draft', ?)`
-  ).run(newSlug, newName, source.tagline, source.welcome, source.closing, JSON.stringify(source.config));
+     VALUES (?, ?, ?, ?, ?, 'draft', ?)`,
+    newSlug, newName, source.tagline, source.welcome, source.closing, JSON.stringify(source.config)
+  );
 
-  const newRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(r.lastInsertRowid));
+  const newRow = await db.get('SELECT * FROM projects WHERE id = ?', Number(r.lastInsertRowid));
   res.status(201).json({ project: presentProject(rowToProject(newRow)) });
-});
+}));
 
 // ---------------------------------------------------------------- submissions (admin)
-app.get('/api/projects/:id/submissions', requireAuth, (req, res) => {
-  const row = findProjectRow(req.params.id);
+app.get('/api/projects/:id/submissions', requireAuth, wrap(async (req, res) => {
+  const row = await findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
-  const rows = db.prepare(
-    'SELECT * FROM submissions WHERE project_id = ? ORDER BY id DESC'
-  ).all(row.id);
+  const rows = await db.all(
+    'SELECT * FROM submissions WHERE project_id = ? ORDER BY id DESC',
+    row.id
+  );
   res.json({ submissions: rows.map(rowToSubmission) });
-});
+}));
 
-app.delete('/api/projects/:id/submissions/:subId', requireAuth, (req, res) => {
-  const row = findProjectRow(req.params.id);
+app.delete('/api/projects/:id/submissions/:subId', requireAuth, wrap(async (req, res) => {
+  const row = await findProjectRow(req.params.id);
   if (!row) return sendError(res, 404, 'Project not found');
   const subId = Number(req.params.subId);
   if (!Number.isInteger(subId)) {
     return sendError(res, 400, 'Invalid ID');
   }
-  const r = db.prepare('DELETE FROM submissions WHERE id = ? AND project_id = ?').run(subId, row.id);
+  const r = await db.run('DELETE FROM submissions WHERE id = ? AND project_id = ?', subId, row.id);
   if (!r.changes) return sendError(res, 404, 'Submission not found');
   res.json({ ok: true });
-});
+}));
 
 // ---------------------------------------------------------------- public customer API
-app.get('/api/public/:slug', (req, res) => {
-  const row = db.prepare('SELECT * FROM projects WHERE slug = ?').get(req.params.slug);
+app.get('/api/public/:slug', wrap(async (req, res) => {
+  const row = await db.get('SELECT * FROM projects WHERE slug = ?', req.params.slug);
   if (!row) return sendError(res, 404, 'Questionnaire not found');
   const project = rowToProject(row);
   const access = publicAccess(req, project.slug);
@@ -375,10 +386,10 @@ app.get('/api/public/:slug', (req, res) => {
     modules: resolveModules(project),
     isAdmin: Boolean(access)
   });
-});
+}));
 
-app.post('/api/public/:slug/submit', (req, res) => {
-  const row = db.prepare('SELECT * FROM projects WHERE slug = ?').get(req.params.slug);
+app.post('/api/public/:slug/submit', wrap(async (req, res) => {
+  const row = await db.get('SELECT * FROM projects WHERE slug = ?', req.params.slug);
   if (!row) return sendError(res, 404, 'Questionnaire not found');
   const project = rowToProject(row);
   const isAdmin = isValidSessionToken(req.cookies[SESSION_COOKIE]);
@@ -435,12 +446,13 @@ app.post('/api/public/:slug/submit', (req, res) => {
   const invalidRequired = [...questions.values()].filter(question => question.required && !cleanAnswers.some(answer => answer.id === question.id));
   if (invalidRequired.length) return res.status(400).json({ error: 'Some required answers are invalid.', errors: invalidRequired.map(q => ({ id: q.id, label: q.label })) });
 
-  const r = db.prepare(
-    'INSERT INTO submissions (project_id, customer_name, customer_email, answers) VALUES (?, ?, ?, ?)'
-  ).run(project.id, name, email, JSON.stringify(cleanAnswers));
+  const r = await db.run(
+    'INSERT INTO submissions (project_id, customer_name, customer_email, answers) VALUES (?, ?, ?, ?)',
+    project.id, name, email, JSON.stringify(cleanAnswers)
+  );
 
   res.status(201).json({ ok: true, submissionId: Number(r.lastInsertRowid), closing: project.closing });
-});
+}));
 
 // ---------------------------------------------------------------- pages
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
@@ -451,9 +463,25 @@ app.get('/c/:slug', (_req, res) => res.sendFile(path.join(__dirname, 'public', '
 
 app.use((_req, res) => sendError(res, 404, 'Not found'));
 
+// Express error middleware: JSON body-parse failures and any async-handler
+// error land here as a JSON response instead of a crash or an HTML error page.
+// eslint-disable-next-line no-unused-vars
+app.use((err, _req, res, _next) => {
+  if (err?.type === 'entity.parse.failed' || (err instanceof SyntaxError && err.status === 400)) {
+    return sendError(res, 400, 'Invalid JSON body');
+  }
+  if (err?.type === 'entity.too.large') {
+    return sendError(res, 413, 'Request body too large');
+  }
+  console.error('[reqforge] Unhandled error:', err);
+  if (res.headersSent) return res.end();
+  sendError(res, 500, 'Something went wrong');
+});
+
 if (!process.env.VERCEL && !process.env.VERCEL_ENV && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ReqForge running on http://0.0.0.0:${PORT}`);
+    console.log(`  Storage:       ${storageInfo.mode}${storageInfo.ephemeral ? ' (EPHEMERAL — data resets)' : ''}`);
     console.log(`  Admin app:     /   (username: ${ADMIN_USERNAME}, password: ${DEFAULT_CREDENTIALS ? '5161211 (default — set ADMIN_USERNAME/ADMIN_PASSWORD env to change)' : 'set via env vars'})`);
     console.log(`  Customer page: /c/<slug>`);
   });

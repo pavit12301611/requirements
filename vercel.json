@@ -1,9 +1,25 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
+  "headers": [
     {
-      "source": "/(.*)",
-      "destination": "/server.js"
+      "source": "/styles.css",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=3600" }]
+    },
+    {
+      "source": "/(admin|customer).js",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=3600" }]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
     }
+  ],
+  "rewrites": [
+    { "source": "/", "destination": "/server.js" },
+    { "source": "/new", "destination": "/server.js" },
+    { "source": "/project/:id", "destination": "/server.js" },
+    { "source": "/edit/:id", "destination": "/server.js" },
+    { "source": "/c/:slug", "destination": "/server.js" },
+    { "source": "/api/(.*)", "destination": "/server.js" }
   ]
 }
